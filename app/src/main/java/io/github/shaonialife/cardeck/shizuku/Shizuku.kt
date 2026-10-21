@@ -130,7 +130,7 @@ object Shell {
         cmd: String,
         timeoutMs: Long = 6000L,
     ): Result {
-        // **UI 线程禁止 shell**：每次 exec 都是 Shizuku newProcess + 进程等待。
+        // **UI 线程禁止 shell**：每次 exec 都是特权进程创建 + 进程等待。
         // 这里不强行拦截（会让原本可用的功能失效），但记录并告警——历史上
         // 已有两次真机 ANR 源于此（detach 清理、横屏勾选框）。
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
@@ -139,6 +139,17 @@ object Shell {
                 "SHELL: ⚠ 主线程调用 shell（第 $mainThreadViolations 次）cmd=${cmd.take(60)}" +
                     "（$timeoutMs ms 上限）——应改用 Bg.run / 后台线程",
             )
+        }
+        // 双后端分发（2026-10-21）：root 已确认可用 → su -c；否则走原 Shizuku 路径。
+        // 只读 RootGate 缓存（非阻塞）：探测已在 PrivilegeGate.resolve 的时机完成。
+        if (io.github.shaonialife.cardeck.privilege.RootGate
+                .cached() ==
+            io.github.shaonialife.cardeck.privilege.RootGate.Probe.ROOT
+        ) {
+            val r =
+                io.github.shaonialife.cardeck.privilege.RootShell
+                    .exec(cmd, timeoutMs)
+            return Result(r.exitCode, r.output)
         }
         val binder =
             rikka.shizuku.Shizuku.getBinder()
@@ -183,9 +194,25 @@ object Shell {
 
 /** CarInput UserService 的绑定管理：绑定一次后所有触摸注入直连常驻 shell 进程（毫秒级）。 */
 object CarInputClient {
+    /**
+     * 当前可用的注入服务（双后端统一出口，2026-10-21）：
+     * root 就绪 → RootDaemonClient 的 daemon binder；否则 → Shizuku UserService binder。
+     * 调用方（TouchRouter/VirtualLauncher/MainActivity）只认 [ICarInput]，零改动。
+     */
+    val service: ICarInput?
+        get() =
+            if (io.github.shaonialife.cardeck.privilege.RootGate
+                    .cached() ==
+                io.github.shaonialife.cardeck.privilege.RootGate.Probe.ROOT
+            ) {
+                io.github.shaonialife.cardeck.privilege.RootDaemonClient.service
+            } else {
+                shizukuService
+            }
+
+    /** Shizuku UserService binder（原逻辑，仅非 root 后端使用）。 */
     @Volatile
-    var service: ICarInput? = null
-        private set
+    private var shizukuService: ICarInput? = null
 
     @Volatile
     private var binding = false
@@ -200,6 +227,11 @@ object CarInputClient {
     /** 诊断日志出口（接入文件日志，HKS 加密下 logcat 不可读）。 */
     @Volatile
     var logSink: ((String) -> Unit)? = null
+        set(value) {
+            field = value
+            // root daemon 的诊断走同一出口
+            io.github.shaonialife.cardeck.privilege.RootDaemonClient.logSink = value
+        }
 
     private var diagAt = 0L
 
@@ -229,7 +261,7 @@ object CarInputClient {
      * 阻塞调用（含 shell ps/kill），须在后台线程执行；绑定成功时自动触发一次。
      */
     fun reapStaleUserServices(): Int {
-        val bound = service ?: return 0
+        val bound = shizukuService ?: return 0
         val keepPid =
             try {
                 bound.pid()
@@ -265,17 +297,17 @@ object CarInputClient {
                 name: ComponentName?,
                 binder: IBinder?,
             ) {
-                service = ICarInput.Stub.asInterface(binder)
+                shizukuService = ICarInput.Stub.asInterface(binder)
                 binding = false
                 val ok =
                     try {
-                        service?.ping() == true
+                        shizukuService?.ping() == true
                     } catch (_: Throwable) {
                         false
                     }
                 diag("connected ping=$ok")
                 if (!ok) {
-                    service = null
+                    shizukuService = null
                     binding = false
                 } else {
                     // 绑定成功后顺手回收旧版本残留进程（其持有的虚拟屏跨进程无法释放，
@@ -286,7 +318,7 @@ object CarInputClient {
 
             override fun onServiceDisconnected(name: ComponentName?) {
                 diag("service disconnected")
-                service = null
+                shizukuService = null
                 binding = false
             }
         }
@@ -296,12 +328,22 @@ object CarInputClient {
     private var lastBindAttemptAt = 0L
 
     /**
-     * 确保 UserService 已绑定。可高频调用：service 为空且距上次尝试 >3s 时自动重绑
-     * （手机重启/Shizuku 重启后 binder 可能丢失而进程残留，需主动重建连接）。
+     * 确保注入服务已就绪（双后端分发，2026-10-21）：
+     * root 就绪 → RootDaemonClient 拉起常驻 daemon；否则走原 Shizuku UserService 绑定。
+     * 可高频调用：内部自带节流（root 3s / Shizuku 1.5s）。
      */
     fun ensure(context: Context) {
         val app = context.applicationContext
         appContext = app
+        // root 后端：拉起 root daemon，跳过全部 Shizuku 绑定逻辑
+        if (io.github.shaonialife.cardeck.privilege.RootGate
+                .cached() ==
+            io.github.shaonialife.cardeck.privilege.RootGate.Probe.ROOT
+        ) {
+            io.github.shaonialife.cardeck.privilege.RootDaemonClient
+                .ensure(app)
+            return
+        }
         if (!binderListenerAdded) {
             binderListenerAdded = true
             try {
@@ -312,13 +354,13 @@ object CarInputClient {
                 }
                 rikka.shizuku.Shizuku.addBinderDeadListener {
                     android.util.Log.w(TAG, "binder dead")
-                    service = null
+                    shizukuService = null
                     binding = false
                 }
             } catch (_: Throwable) {
             }
         }
-        if (service != null) return
+        if (shizukuService != null) return
         val now = android.os.SystemClock.uptimeMillis()
         // 1.5s 节流：Shizuku 被系统冻结期间绑定会静默失败，解冻后需要尽快恢复
         if (now - lastBindAttemptAt < 1_500L) return

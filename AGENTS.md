@@ -721,6 +721,30 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
   只靠长度会把 telephony 的 usage 0xB3 当成「快进」误发。描述符缺失时才回退长度判据。
   ③ 判定实现均有单测钉死语义（`ConsumerKeysTest` / `TouchReportsTest`，含奥迪与
   DiPlay 两套真实描述符），改这些解析器先看测试。
+- **特权后端双通道（root 优先 / Shizuku 回退，2026-10-21，分支 shiorroot）**：
+  原先强制 Shizuku 的检测与实现改为可选 root。核心约定：
+  ① **检测策略**：所有原 Shizuku 检测点**先**触发 root 探测（`su -c id` 实测，
+  不看 su 二进制在场——部分 ROM 有 su 壳但拒绝提权）；root 成功 → 进程内缓存、
+  全程优先 root、不再碰 Shizuku（不反复弹授权窗）；root 失败 → 完整回退原链路。
+  探测**超时不写缓存**（授权窗未决≠无 root，写死会让用户点完允许还得重启 App）。
+  ② **A 层（shell 命令，40 处调用点零改动）**：`Shell.exec` 内部按缓存分发——
+  root 走 `su -c`，否则走 Shizuku newProcess。新增调用点**不要**绕过 `Shell.exec`
+  直接起 su/Shizuku，否则后端切换会漏。
+  ③ **B 层（触摸注入/受信虚拟屏/IME 策略）**：root 走常驻 daemon
+  （`su -c app_process` 拉起 `RootDaemonEntry`）。两个硬约束：
+  **daemon 必须 setuid(2000) 对齐 shell uid**（createDisplay 的 DisplayManagerService
+  校验「packageName 与调用 uid 匹配」——com.android.shell Context + uid 2000 才过，
+  uid 0 不匹配任何包名会 SecurityException）；**setuid 不改 SELinux 域**，
+  ServiceManager.addService 的域检查不受影响。daemon 复用 `CarInputServiceImpl`
+  全部反射逻辑，经 ServiceManager 注册 `ICarInput`，应用侧 binder 直连（毫秒级）。
+  ④ **进程生命周期**：root daemon 随宿主 App 消失自尽（watchdog 比对 appPid）；
+  「进程持有的资源（虚拟屏等）必须考虑跨版本残留释放」的收口原则对 root daemon
+  同样适用（daemon 死 → 其虚拟屏随进程回收，与 Shizuku UserService 同机制）。
+  ⑤ **JVM 单测坑**：`android.util.Log` 未 mock 直接抛 RuntimeException——
+  探测/纯函数路径的 Log 调用要 try/catch 容错（见 `RootGate.logW`），否则单测假红。
+  ⑥ **已知边界**：root 探测成功但 daemon 注册失败（SELinux 拦 addService）时
+  不自动回退 Shizuku（缓存已判 ROOT）——混合回退策略属后续增强，改此处先看
+  `HISTORY.md` 本次记录。
 - **风格**：Kotlin，中文注释（注释写「为什么/实测依据」而非复述代码）；UI 文案中文。
   `reference/` 下是 GPL 参考仓库（gitignore，勿复制代码入本项目、勿外传）。
 

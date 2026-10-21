@@ -27,6 +27,7 @@ import io.github.shaonialife.cardeck.net.CarPlayServiceBrowser
 import io.github.shaonialife.cardeck.net.EndpointHosts
 import io.github.shaonialife.cardeck.net.WifiCarPlayConnector
 import io.github.shaonialife.cardeck.net.WifiSavedNetworks
+import io.github.shaonialife.cardeck.privilege.PrivilegeGate
 import io.github.shaonialife.cardeck.service.CarPlayService
 import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
@@ -413,12 +414,18 @@ object SessionController {
     fun startConnection(context: Context) {
         connectCancelled = false
         phaseHint = "蓝牙就绪，等待车机回连…"
+        // root 优先（2026-10-21）：缓存由 ensureShizukuReady 的 PrivilegeGate.resolve 预热，
+        // 主线程只读缓存（resolveCached）——root 就绪直接 READY，不再碰 Shizuku
         when (
-            ShizukuGate
-                .state(context)
+            PrivilegeGate
+                .resolveCached(context)
         ) {
             ShizukuGate.State.READY ->
-                appendLog("SHIZUKU: 就绪（触摸注入可用）")
+                if (PrivilegeGate.isRootBackend()) {
+                    appendLog("ROOT: 就绪（触摸注入可用，无需 Shizuku）")
+                } else {
+                    appendLog("SHIZUKU: 就绪（触摸注入可用）")
+                }
 
             ShizukuGate.State.UNAUTHORIZED -> {
                 appendLog("SHIZUKU: 未授权本应用——已发起授权请求，请在弹窗点允许后重连")
@@ -427,10 +434,10 @@ object SessionController {
             }
 
             ShizukuGate.State.NOT_RUNNING ->
-                appendLog("SHIZUKU: 服务未运行——打开 Shizuku App 点「启动」")
+                appendLog("SHIZUKU: 服务未运行——打开 Shizuku App 点「启动」（或授权 root 后重连）")
 
             ShizukuGate.State.NOT_INSTALLED ->
-                appendLog("SHIZUKU: 未安装（隐形屏模式需要）")
+                appendLog("SHIZUKU: 未安装（隐形屏模式需要；或授权 root 替代）")
         }
         CarPlayService
             .start(context)
@@ -578,7 +585,7 @@ object SessionController {
     private fun autoJoinCarWifi(wifi: Iap2SenderSession.WifiConfiguration) {
         Bg.run("wifi-auto-join") {
             val shellReady =
-                appContext?.let { ShizukuGate.state(it) == ShizukuGate.State.READY } == true
+                appContext?.let { PrivilegeGate.resolve(it) == ShizukuGate.State.READY } == true
             // 1) WLAN 开关。shell 不可用时跳过检查——requestNetwork 会以 Unavailable 反馈。
             if (shellReady && shellWifiDisabled() && !waitForWifiEnabled()) return@run
             if (connectCancelled) return@run
@@ -2135,7 +2142,7 @@ object SessionController {
             Bg.run("wifi-join-on-endpoint") {
                 while (!connectCancelled) {
                     val shellReady =
-                        appContext?.let { ShizukuGate.state(it) == ShizukuGate.State.READY } == true
+                        appContext?.let { PrivilegeGate.resolve(it) == ShizukuGate.State.READY } == true
                     when (val result = joinCarWifiSpecifier(wifiConfig, shellReady)) {
                         is WifiCarPlayConnector.JoinResult.Joined -> {
                             continueWithNetwork(true)

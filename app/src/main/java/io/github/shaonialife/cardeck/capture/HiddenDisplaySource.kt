@@ -3,6 +3,7 @@ package io.github.shaonialife.cardeck.capture
 import android.content.Context
 import android.view.Surface
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
+import io.github.shaonialife.cardeck.privilege.PrivilegeGate
 import io.github.shaonialife.cardeck.shizuku.CarInputClient
 import io.github.shaonialife.cardeck.shizuku.ShizukuGate
 
@@ -31,22 +32,24 @@ class HiddenDisplaySource(
         densityDpi: Int,
     ): Boolean {
         detach()
-        // 逐状态诊断：Shizuku「开着」≠ 已授权本应用（服务端授权必须弹窗点一次）
-        when (val gate = ShizukuGate.state(context)) {
+        // 逐状态诊断（2026-10-21 改双后端）：root 优先——root 就绪直接放行，
+        // 不再要求 Shizuku；root 不可用才走 Shizuku 三态引导。
+        // 「开着」≠「已授权本应用」的坑在 Shizuku 路径仍逐态处理。
+        when (val gate = PrivilegeGate.resolve(context)) {
             ShizukuGate.State.READY -> Unit
 
             ShizukuGate.State.NOT_INSTALLED -> {
-                log("SHIZUKU: 未安装 Shizuku App（shizuku.rikka.app）")
+                log("PRIVILEGE: 未安装 Shizuku App（shizuku.rikka.app），且 root 不可用")
                 return false
             }
 
             ShizukuGate.State.NOT_RUNNING -> {
-                log("SHIZUKU: 服务未运行——打开 Shizuku App 点「启动」（手机重启后需重新启动）")
+                log("PRIVILEGE: Shizuku 服务未运行（或授权 root 替代）——打开 Shizuku App 点「启动」（手机重启后需重新启动）")
                 return false
             }
 
             ShizukuGate.State.UNAUTHORIZED -> {
-                log("SHIZUKU: 未授权本应用——已发起授权请求，请在弹窗中点「允许」后重连")
+                log("PRIVILEGE: 未授权本应用——已发起 Shizuku 授权请求，请在弹窗中点「允许」后重连（或授权 root 替代）")
                 ShizukuGate.requestPermission()
                 return false
             }

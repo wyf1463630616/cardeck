@@ -13,6 +13,7 @@ import android.view.Surface
 import io.github.shaonialife.cardeck.launcher.settings.AppOrientationCompat
 import io.github.shaonialife.cardeck.launcher.settings.DisplayPrefs
 import io.github.shaonialife.cardeck.media.NotificationAccess
+import io.github.shaonialife.cardeck.privilege.PrivilegeGate
 import io.github.shaonialife.cardeck.render.CARD_MARGIN_PX
 import io.github.shaonialife.cardeck.render.DualDisplayComposer
 import io.github.shaonialife.cardeck.render.OverlayCard
@@ -417,11 +418,11 @@ object VirtualLauncher {
                 appPortraitDensity
             }
 
-        // 等待 Shizuku UserService 绑定（受信虚拟屏需要 shell 权限创建）
+        // 等待注入服务绑定（受信虚拟屏需要 shell 权限创建；双后端：root daemon / Shizuku UserService）
         var svc = CarInputClient.service
         if (svc == null &&
-            ShizukuGate
-                .state(context) ==
+            PrivilegeGate
+                .resolve(context) ==
             ShizukuGate.State.READY
         ) {
             val deadline = SystemClock.uptimeMillis() + 2_500L
@@ -433,7 +434,9 @@ object VirtualLauncher {
             }
         }
         val useTrusted = svc != null
-        log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
+        log(
+            "LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(${if (PrivilegeGate.isRootBackend()) "root" else "shell"})" else "应用屏(回退)"}",
+        )
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
         composer.targetFps =

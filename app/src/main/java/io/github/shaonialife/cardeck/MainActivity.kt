@@ -36,6 +36,7 @@ import io.github.shaonialife.cardeck.legal.DisclaimerDialog
 import io.github.shaonialife.cardeck.legal.DisclaimerPrefs
 import io.github.shaonialife.cardeck.legal.needsDisclaimerAtLaunch
 import io.github.shaonialife.cardeck.media.NotificationAccess
+import io.github.shaonialife.cardeck.privilege.PrivilegeGate
 import io.github.shaonialife.cardeck.service.CarPlayService
 import io.github.shaonialife.cardeck.shizuku.CarInputClient
 import io.github.shaonialife.cardeck.shizuku.Shell
@@ -431,8 +432,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun ensureNotificationAccessAsync() {
         Bg.run("notification-access") {
-            if (ShizukuGate.state(this) != ShizukuGate.State.READY) {
-                log("MEDIA: Shizuku 未就绪——暂无法自动授予通知使用权（就绪后会补）")
+            // 后台线程：用阻塞版 resolve（root 探测在 ensureShizukuReady 已做过，命中缓存直接返回）
+            if (PrivilegeGate.resolve(this) != ShizukuGate.State.READY) {
+                log("MEDIA: 特权后端未就绪——暂无法自动授予通知使用权（就绪后会补）")
                 return@run
             }
             NotificationAccess.ensureGranted(this, ::log)
@@ -440,23 +442,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ensureShizukuReady(onReady: () -> Unit) {
-        val state = ShizukuGate.state(this)
-        if (state == ShizukuGate.State.READY) {
-            // Shizuku 就绪即可静默补授权（此前若因未就绪而跳过，这里补上）
-            ensureNotificationAccessAsync()
-            onReady()
-            return
+        // root 优先探测（2026-10-21）：所有原 Shizuku 检测点先触发 root 检测，
+        // 成功则全程走 root（不再要求 Shizuku）；失败才回退原 Shizuku 链路。
+        // 探测含 su 进程创建（首次可能弹授权窗）——转后台线程，完成后回主线程续流程。
+        Bg.run("privilege-resolve") {
+            val state = PrivilegeGate.resolve(this)
+            runOnUiThread {
+                if (state == ShizukuGate.State.READY) {
+                    // root / Shizuku 任一就绪即可静默补授权（此前若因未就绪而跳过，这里补上）
+                    ensureNotificationAccessAsync()
+                    onReady()
+                    return@runOnUiThread
+                }
+                log("PRIVILEGE: 未就绪（$state backend=${PrivilegeGate.lastBackend}）——已阻止本次连接")
+                promptShizukuNotReady(state)
+            }
         }
-        log("SHIZUKU: 未就绪（$state）——已阻止本次连接")
-        promptShizukuNotReady(state)
     }
 
     /**
-     * Shizuku 未就绪引导弹窗：主操作随状态变化，附「重试检查」与「取消」。
+     * 特权后端未就绪引导弹窗：主操作随状态变化，附「重试检查」与「取消」。
+     * 文案分 root / Shizuku 两路（PrivilegeGate.guidanceOf：root 已实测不可用时
+     * 只留 Shizuku 方案；root 未决时给出两条路）。
      * 走 [DarkMessageDialog] 自绘面板——系统 AlertDialog 是浅色主题，与深色 UI 割裂。
      */
     private fun promptShizukuNotReady(state: ShizukuGate.State) {
-        val guidance = ShizukuGate.guidanceOf(state)
+        val guidance = PrivilegeGate.guidanceOf(state)
         val actions = mutableListOf<DarkMessageDialog.Action>()
         actions += DarkMessageDialog.Action("取消") {}
         actions +=
@@ -525,10 +536,11 @@ class MainActivity : AppCompatActivity() {
     /** 「启动连接」主体（权限检查留在这里；会话启动交给 [SessionController]，幂等不双开）。 */
     private fun startConnectionNow() {
         runOnUiThread {
-            // 兜底守卫：授权回调等延迟路径也可能走到这里，Shizuku 中途停掉时同样要拦住
-            val gate = ShizukuGate.state(this)
+            // 兜底守卫：授权回调等延迟路径也可能走到这里，后端中途停掉时同样要拦住。
+            // 只读缓存（主线程安全）：root/Shizuku 就绪判定在 ensureShizukuReady 已完成
+            val gate = PrivilegeGate.resolveCached(this)
             if (gate != ShizukuGate.State.READY) {
-                log("SHIZUKU: 未就绪（$gate）——已阻止本次连接")
+                log("PRIVILEGE: 未就绪（$gate）——已阻止本次连接")
                 promptShizukuNotReady(gate)
                 return@runOnUiThread
             }
@@ -763,9 +775,15 @@ class MainActivity : AppCompatActivity() {
 
         // ---- Shizuku 状态行：未就绪时点它直接看引导（与「启动连接」被拦下同一套文案）----
         findViewById<LinearLayout>(R.id.rowShizuku).setOnClickListener {
-            val state = ShizukuGate.state(this)
+            val state = PrivilegeGate.resolveCached(this)
             if (state == ShizukuGate.State.READY) {
-                snack("Shizuku 已就绪——虚拟屏与触摸注入可用")
+                snack(
+                    if (PrivilegeGate.isRootBackend()) {
+                        "root 已就绪——虚拟屏与触摸注入可用（无需 Shizuku）"
+                    } else {
+                        "Shizuku 已就绪——虚拟屏与触摸注入可用"
+                    },
+                )
             } else {
                 promptShizukuNotReady(state)
             }
@@ -997,12 +1015,12 @@ class MainActivity : AppCompatActivity() {
             heroSubline.text = "正在检查残留屏…"
             heroProgress.visibility = View.VISIBLE
         }
-        // 空闲但 Shizuku 未就绪：副标题直接说明「点了也连不上」，避免用户反复点
+        // 空闲但特权后端未就绪：副标题直接说明「点了也连不上」，避免用户反复点
         if (s == HeroState.IDLE && !startupCheckRunning) {
-            val gate = ShizukuGate.state(this)
+            val gate = PrivilegeGate.resolveCached(this)
             if (gate != ShizukuGate.State.READY) {
                 heroSubline.text =
-                    "Shizuku 未就绪（${ShizukuGate.guidanceOf(gate).title}）——" +
+                    "特权后端未就绪（${PrivilegeGate.guidanceOf(gate).title}）——" +
                     "无法连接，点下方「Shizuku」查看怎么处理"
             }
         }
@@ -1149,7 +1167,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun updateReadyRow() {
         var ready = 0
-        val shizukuState = ShizukuGate.state(this)
+        val shizukuState = PrivilegeGate.resolveCached(this)
         val shizukuReady = shizukuState == ShizukuGate.State.READY
         if (shizukuReady) ready++
         updateShizukuRow(shizukuState)
@@ -1245,11 +1263,15 @@ class MainActivity : AppCompatActivity() {
         shizukuBadge.setTextColor(getColor(if (ready) R.color.m3_ok else R.color.m3_on_sec_container))
         shizukuBadge.text = if (ready) "就绪" else "未就绪"
         shizukuDesc.text =
-            when (state) {
-                ShizukuGate.State.READY -> "shell 权限已就绪 · 虚拟屏与触摸可用"
-                ShizukuGate.State.NOT_RUNNING -> "服务未运行——点此查看怎么启动"
-                ShizukuGate.State.UNAUTHORIZED -> "未授权本应用——点此请求授权"
-                ShizukuGate.State.NOT_INSTALLED -> "未安装 Shizuku——点此查看说明"
+            when {
+                // root 后端：明确告知不需要 Shizuku（用户需求：检测到 root 就不再强制 Shizuku）
+                ready && PrivilegeGate.isRootBackend() ->
+                    "root 已就绪 · 虚拟屏与触摸可用（无需 Shizuku）"
+
+                ready -> "shell 权限已就绪 · 虚拟屏与触摸可用"
+                state == ShizukuGate.State.NOT_RUNNING -> "服务未运行——点此查看怎么启动"
+                state == ShizukuGate.State.UNAUTHORIZED -> "未授权本应用——点此请求授权"
+                else -> "未安装 Shizuku——点此查看说明（或授权 root）"
             }
     }
 
@@ -1768,10 +1790,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateShizukuChip() {
         val ready =
-            ShizukuGate
-                .state(this) ==
+            PrivilegeGate.resolveCached(this) ==
                 ShizukuGate.State.READY
-        shizukuChip.text = if (ready) "车机服务在线" else "Shizuku 未就绪"
+        shizukuChip.text =
+            when {
+                ready && PrivilegeGate.isRootBackend() -> "root 服务在线"
+                ready -> "车机服务在线"
+                else -> "Shizuku 未就绪"
+            }
         shizukuChip.compoundDrawables.getOrNull(0)?.let {
             DrawableCompat.setTint(
                 it.mutate(),
@@ -2048,14 +2074,13 @@ class MainActivity : AppCompatActivity() {
         }
         shellStateText.text = "读取中…"
         Bg.run("shell-state") {
-            if (ShizukuGate
-                    .state(this) !=
+            if (PrivilegeGate.resolve(this) !=
                 ShizukuGate.State.READY
             ) {
                 runOnUiThread {
                     startupCheckRunning = false
                     if (heroState == HeroState.IDLE) applyHeroState(HeroState.IDLE)
-                    shellStateText.text = "Shizuku 未就绪——shell 状态读取需要 Shizuku"
+                    shellStateText.text = "特权后端未就绪——shell 状态读取需要 root 或 Shizuku"
                 }
                 return@run
             }
@@ -2223,11 +2248,10 @@ class MainActivity : AppCompatActivity() {
     private fun resetShellState() {
         shellStateText.text = "复位中…"
         Bg.run("shell-reset") {
-            if (ShizukuGate
-                    .state(this) !=
+            if (PrivilegeGate.resolve(this) !=
                 ShizukuGate.State.READY
             ) {
-                runOnUiThread { shellStateText.text = "Shizuku 未就绪——shell 复位需要 Shizuku" }
+                runOnUiThread { shellStateText.text = "特权后端未就绪——shell 复位需要 root 或 Shizuku" }
                 return@run
             }
 
