@@ -16,6 +16,7 @@ import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.capture.HiddenDisplaySource
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
+import io.github.shaonialife.cardeck.iap2.ReceiverProfile
 import io.github.shaonialife.cardeck.input.ConsumerKeys
 import io.github.shaonialife.cardeck.input.TouchReports
 import io.github.shaonialife.cardeck.input.TouchRouter
@@ -1596,6 +1597,17 @@ object SessionController {
                     null -> "未知（按需配对）"
                 },
         )
+        // 车机画像（信号收口点）：mDNS 侧信号到达——era 判定 + 依据一行可解释
+        appendLog(
+            ReceiverProfile.describe(
+                ReceiverProfile.classify(
+                    ReceiverProfile.Signals(
+                        features = endpoint.advertisedFeatures,
+                        srcvers = endpoint.sourceVersion,
+                    ),
+                ),
+            ),
+        )
         // 先绑网络再解析端点：mDNS 组播跟随 bindProcessToNetwork 的网络，解析放前面
         // 只会拿到旧网络的结果（此前靠 resolveEndpointHost 内部重试掩盖，白等数秒）。
         // 绑定完成后再并行做三件事：ctrl 广播针对新网络重注册、后台发现 _airplay._tcp、
@@ -1713,10 +1725,24 @@ object SessionController {
                         sessionStarting.set(false)
                         return@run
                     }
-                    if (keys == null && !noPairing && !client.pairSetupRejected && client.attemptedPairing) {
+                    // 配对失败后的兜底路径（纯函数决策，真机抓包场景由 PairingFallbackTest 钉死）
+                    val fallbackAfterFirstRound =
+                        pairingFallback(
+                            keysEstablished = keys != null,
+                            noPairing = noPairing,
+                            pairSetupRejected = client.pairSetupRejected,
+                            pairingForbidden = client.pairingForbidden,
+                            attemptedPairing = client.attemptedPairing,
+                            pairingUnsupported = client.pairingUnsupported,
+                        )
+                    if (fallbackAfterFirstRound.useBtRetireHack) {
                         // 第二阶段（仅测试台 DiPlay）：复现「BT 控制已结束」状态再试一次。
                         // 真车（Audi）绝不能断 BT——真无线 CarPlay 的 BT 控制通道全程保活，
                         // 断开会让车机拆掉整轮 AirPlay 窗口（实车实测）。
+                        // pairingForbidden（任意段 403，含 verify/认证段——2026-10-21 真机
+                        // sysdiagnose 定谳：首连被 403 是车机固有状态，它 18~20s 后自动
+                        // 重邀、第二次即成）时同样禁用：断 BT 会让车机整栈重建、恰好错过
+                        // 即将到来的重邀窗口。
                         // 门槛：仅当本轮真的连上过接收端 RTSP（attemptedPairing）才用此 hack；
                         // 端点未解析（无 IP）/端口未开时绝不值得断 BT（2026-10-11 踩过：
                         // mDNS 失败也触发 detach，白白拆掉车机窗口）。
@@ -1737,8 +1763,19 @@ object SessionController {
                     //  - 配对彻底失败但 RTSP 确实连上过（有些车只认明文会话，
                     //    pair-setup/pair-verify 全拒——catplay 正是「先试明文、失败才配对」，
                     //    我们反过来：优先配对（保住 DiPlay/已知车机），失败后降级明文兜底）。
+                    //  - **403 证据（pairingForbidden）除外**（真机抓包 2026-10-21 定谳，决策
+                    //    见 pairingFallback）：车机在等自身就绪、~20s 后重邀即成——明文必被
+                    //    拒且消耗重邀窗口，不降级。
+                    // hack 段可能已重跑拿到 keys：决策以重跑后的状态为准。
                     val plainSession =
-                        keys == null && (client.pairingUnsupported || client.attemptedPairing)
+                        pairingFallback(
+                            keysEstablished = keys != null,
+                            noPairing = noPairing,
+                            pairSetupRejected = client.pairSetupRejected,
+                            pairingForbidden = client.pairingForbidden,
+                            attemptedPairing = client.attemptedPairing,
+                            pairingUnsupported = client.pairingUnsupported,
+                        ).usePlainSession
                     if (plainSession) {
                         phaseHint = "建立明文会话…"
                         appendLog(
@@ -2215,4 +2252,33 @@ object SessionController {
 
     @Volatile
     private var iapEventMessageCount = 0
+}
+
+/** 配对失败后的兜底路径决策（纯函数，真机抓包场景由 PairingFallbackTest 钉死）。 */
+internal data class PairingFallback(
+    /** 「断 BT 复现控制结束再试」二段 hack（仅测试台 DiPlay 形态）。 */
+    val useBtRetireHack: Boolean,
+    /** et=NONE 明文会话降级（pre-HomeKit 老车机 / 配对全拒但 RTSP 连上过的兜底）。 */
+    val usePlainSession: Boolean,
+)
+
+/**
+ * 决策依据（2026-10-21 真机 sysdiagnose，docs/PROTOCOL-NOTES.md §13a）：
+ * 任意阶段 403 = 「iAP2 信任已建立的车机在等自身就绪」——首连被拒是车机固有状态，
+ * 它 18~20s 后自动重邀、第二次即成。此状态下断 BT（整栈重建 30~40s，恰好错过重邀
+ * 窗口）与明文降级（必被拒且空耗重邀窗口）都是反向操作，两条兜底一律禁用；
+ * 配对循环以 5s 退避在窗口内原地重试（见 pairingRetryBackoffMs）。
+ */
+internal fun pairingFallback(
+    keysEstablished: Boolean,
+    noPairing: Boolean,
+    pairSetupRejected: Boolean,
+    pairingForbidden: Boolean,
+    attemptedPairing: Boolean,
+    pairingUnsupported: Boolean,
+): PairingFallback {
+    if (keysEstablished) return PairingFallback(useBtRetireHack = false, usePlainSession = false)
+    val useBtRetireHack = !noPairing && !pairSetupRejected && !pairingForbidden && attemptedPairing
+    val usePlainSession = !pairingForbidden && (pairingUnsupported || attemptedPairing)
+    return PairingFallback(useBtRetireHack = useBtRetireHack, usePlainSession = usePlainSession)
 }

@@ -569,6 +569,46 @@ DockActivity，不受信）+ CarPlayApp（原生应用屏）+ CarPlayAppHi（超
     点「请求授权」无响应，在 Shizuku 里「停止」再「启动」后一次成功）。
   - 卡片文案要区分三种空：授权缺失（显示「未授予通知使用权」）、有会话但暂停、
     完全无会话（后两者都是「未在播放」）。
+- **仪表盘分屏拖拽（2026-10-22 落地）的四个跨会话结论**：
+  ① **视觉与触达分层**：中缝视觉宽（`DASH_GAP_PX=24`）与把手触达宽
+  （`DASH_HANDLE_TOUCH_PX=60`）是两个常量——把手/粘性路由域比缝宽、两侧压在
+  卡片上（地图侧溢出段被 tile 盖住**不可见但可触摸**：触摸路由与 GL 合成本就是
+  两层）。一体宽 44px 的首版被用户反馈「中缝太宽」。
+  ② **拖动中只改绘制矩形、松手才 resize**：composer `tileEdgeOverride` 只改 SPLIT
+  目标矩形（纹理整幅 UV 拉伸），commit 才走 `resizeMapDisplay`（真实 resize 触发
+  地图应用配置变更）。**限位钳制必须按比例域换算边界**——按位置域 [边距, 边距+可用]
+  钳等于允许比例 [0,1]，用户实测能拉到 0。
+  ③ **快拖防断流要粘性路由**：把手落后手指时坐标会越出命中域，TouchRouter 按坐标
+  逐帧改判会跨屏重注（掐断拖拽+误触地图）；按下命中把手条即整流固定路由应用屏
+  （`dashHandleHit` + `splitHandlePressed`，同 overlay 卡手势独占模式）。
+  ④ 车机虚拟屏持有焦点时，**`am start` 不带 `--display` 会落到聚焦的虚拟屏**
+  （用户车机画面闪出调试 UI 实测）——会话中启动手机侧 Activity 必须显式
+  `--display 0`；无线 adb 的**流式安装协议会静默挂起**（push 76MB/s 证明传输无碍），
+  大包改走 `adb push + pm install`。
+  几何推导集中在 `VirtualLauncher.dashSplitGeom` 纯函数（`DashSplitMathTest` 钉死
+  四方一致性），改分屏相关代码勿在四处重新裸算。
+- **真机 iPhone sysdiagnose 对照（2026-10-21，docs/PROTOCOL-NOTES.md §13）**：两车三份
+  抓包（iOS 18，`/usr/bin/log show --archive` 读 unified log）定了四条铁律：
+  ① **奥迪 MMI 3315_5GHz 首连 403 是车机固有状态**——真 iPhone 在 pair-verify 通过后
+  照样被 MFi 段 403 拒，车机 18~20s **自动重邀、第二次即成**；正确恢复 = 保持 BT、
+  原流程退避重试（已落地：`pairingForbidden` 禁断-BT-hack、禁明文降级、403 退避 5s）。
+  ② 探歌类车机**只认 iAP2 配供应链带出的入网**：手动/系统保存过车机热点 = 永远无
+  邀请无 mDNS（同 SSID 清理弹窗对此车是关键）；双频 SSID 必须用 0x5703 指定的那个。
+  ③ 该奥迪成功会话 **iAPChannel 协商 = 0**（真 iPhone 未启 WiFi 隧道）——「MIB3 必须
+  建隧道」结论存疑，动隧道前先真车 A/B。
+  ④ 两车成功路径全是 **IPv6 link-local :7000** + pair-verify + MFi（标准 MODERN 形态，
+  无特殊协议）；SETUP 应答可无 streamID（我们只读 dataPort 天然兼容）。
+- **车机画像（ReceiverProfile）：版本/能力信号统一收口**（2026-10-20）：`iap2/ReceiverProfile`
+  纯函数聚合三处信号——0x1D01 身份+收/发双清单、mDNS features/srcvers——产出
+  era（三时代）/wifiGen（新旧 WiFi 协议）判定，**依据随日志输出**（`PROFILE:` 行，
+  判错可回溯）。两个接线点：`Iap2SenderSession.logIdentification`（BT 侧）与
+  `SessionController.onCarPlayEndpoint` 端点诊断后（mDNS 侧）。硬约束：
+  ① **按能力分支，不按版本号/品牌硬编码**（srcvers 只做先验，清单与实测行为才是
+  分派依据——HID 描述符教训的推广）；② **「清单未声明」不等于「不支持」**：奥迪
+  稀疏清单（2+5 项）不列 0x57xx 但旧协议实测工作——wifiGen=NEW 要求清单完整
+  （合计 ≥10 项，iD9 形态）仍无 0x5703/0x5702，稀疏清单判 UNKNOWN 走旧协议
+  （0x5703 有超时兜底）；③ identityKey 存原文（与 0x1D01 逐字一致），持久化键的
+  清洗由 MfiLengthMemory.receiverKey 负责——后续 Memory 并表共用此键。
 - **协议差异以日志为准**：测试台（DiPlay）与真车（奥迪 MIB3）行为多处相反（MFi 挑战
   32B/20B、0x4301 有无、ctrl 邀请死锁等），细节见 `docs/PROTOCOL-NOTES.md` §9，
   改协议代码前先对照。
