@@ -465,6 +465,10 @@ class AirPlayClient(
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
+        // HUD mock 发送委托与链路同生命周期：不清的话旧 lambda 持已关实例，
+        // 测试页点发送只会拿到「入队失败」（死引擎拒帧），且无从归因。
+        RouteGuidanceSender.transmit = null
+        RouteGuidanceSender.subscribed = false
         // 注意：controlIapTx 不在这里 shutdown——close() 会被同实例的重试路径
         // （retryWithPairing 等）复用，杀掉执行器会废掉重连后的 MIB3 出站；
         // 守护线程常驻的代价可忽略（每客户端实例一根）
@@ -1319,6 +1323,8 @@ class AirPlayClient(
                     alive = { socket?.isClosed == false },
                 ).also {
                     it.onMediaKey = { keyCode -> onMediaKey?.invoke(keyCode) }
+                    // HUD mock 测试页发送入口（RouteGuidanceSender → 当前活动链路）
+                    RouteGuidanceSender.transmit = { msgId, body -> it.sendCsmFromUi(msgId, body) }
                     it.begin()
                     iapLink = it
                 }

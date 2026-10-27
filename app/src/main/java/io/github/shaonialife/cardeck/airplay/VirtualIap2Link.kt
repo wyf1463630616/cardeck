@@ -445,6 +445,46 @@ class VirtualIap2Link(
         )
     }
 
+    /**
+     * 外部发送入口（HUD mock 测试页）：组帧并进入引擎 backlog。
+     *
+     * 返回 null = 已入队成功；非 null = 失败原因（直接展示给用户）。链路状态细分：
+     *  - [alive] 为 false（连接已关）→ 「链路已断开」
+     *  - 引擎 DEAD（重传看门狗超时/对端 reset 后 `die()`，[Iap2LinkEngine.sendControl]
+     *    只在此时或帧超限时返回 false）→ 「链路引擎已死，请重连」
+     *  - NEGOTIATING/IDLE → 入队成功但帧积压在 backlog，等协商到 NORMAL 后由
+     *    pacer 发出——文案提示「等待链路就绪」。
+     */
+    fun sendCsmFromUi(
+        messageId: Int,
+        body: ByteArray = ByteArray(0),
+    ): String? {
+        if (!alive()) return "链路已断开（先连接车机）"
+        val frame = Iap2Csm.encode(messageId, body)
+        synchronized(lock) {
+            if (engine.isDead) {
+                // 死因两种：iAP2 协商/重传超时；或（2026-10-26 CAMRY 实测）车机拆掉整个
+                // CarPlay 会话后旧引擎重传余波判死——文案必须涵盖后者，别误导成「协商失败」。
+                return "iAP2 链路已失效（车机拆会话/重传超时），请重新连接后再试"
+            }
+            val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
+            if (!ok) {
+                return "入队被拒（帧超限或引擎已死，state=${engine.state}）"
+            }
+            val pending = engine.state != Iap2LinkEngine.State.NORMAL
+            log(
+                "IAPLINK: HUD mock tx 0x${messageId.toString(16)} " +
+                    "(${Iap2MessageIds.nameOf(messageId)}) ${frame.size}B ok=true" +
+                    if (pending) "（state=${engine.state}，等待链路就绪后发出）" else "",
+            )
+            return if (pending) {
+                "已入队，但链路尚未就绪（state=${engine.state}）——帧会等协商完成后发出；若持续无画面请重连"
+            } else {
+                null
+            }
+        }
+    }
+
     /** 直接投递完整 CSM 帧（Frida 抓的逐字节常量，勿重新编码）。 */
     private fun sendRawCsmLocked(frame: ByteArray) {
         val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
@@ -588,6 +628,27 @@ class VirtualIap2Link(
                 // 仪表盘歌词/媒体卡的数据通路（0x5001 + file-transfer 封面）后续接
                 // MediaSessionsState——空态应答是 MIB3 存活的前置，先落这版。
                 log("IAPLINK: MIB3 0x5000 → 0x5001（空态）——仪表盘媒体数据待接")
+            }
+
+            Iap2MessageIds.START_ROUTE_GUIDANCE_UPDATES -> {
+                if (!mib3) return
+                // HUD 导航数据订阅（accessoryd 逆向对齐，见 RouteGuidanceSender 注释）：
+                // 车机订阅 = 它进入 RG 消费状态（CAMRY 实测：不订阅就不画 HUD）。
+                // 回 NO_ROUTE 空态确认订阅生效；真实 maneuver 序列由 HUD mock 测试页驱动。
+                RouteGuidanceSender.subscribed = true
+                sendCsmLocked(
+                    Iap2MessageIds.ROUTE_GUIDANCE_UPDATE,
+                    RouteGuidanceSender.noRouteBody(),
+                )
+                log("IAPLINK: 0x5200 → 0x5201（NO_ROUTE 空态）——HUD 导航订阅已应答")
+                runCatching { RouteGuidanceSender.onEvent?.invoke("← 0x5200 订阅到达，HUD 导航已激活（回 NO_ROUTE 空态）") }
+            }
+
+            Iap2MessageIds.STOP_ROUTE_GUIDANCE_UPDATES -> {
+                if (!mib3) return
+                RouteGuidanceSender.subscribed = false
+                log("IAPLINK: 0x5203 退订——HUD 导航订阅已结束")
+                runCatching { RouteGuidanceSender.onEvent?.invoke("← 0x5203 退订，车机已退出 RG 消费") }
             }
 
             ids.START_HID -> {

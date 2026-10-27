@@ -64,6 +64,12 @@ object Iap2MessageIds {
     const val START_COMMUNICATIONS_UPDATES = 0x4157
     const val START_CALL_STATE_UPDATES = 0x4154
 
+    // ---- Route Guidance（0x5200 订阅的应答族，手机 → 车机；HUD 导航数据）----
+    // 字段语义与 TLV 布局见 RouteGuidanceSender 注释（accessoryd 23G71 逆向对齐）。
+    const val ROUTE_GUIDANCE_UPDATE = 0x5201 // 路由级状态（state/ETA/距离/路名）
+    const val ROUTE_GUIDANCE_MANEUVER_UPDATE = 0x5202 // 单 maneuver 详情（类型/角度/道路）
+    const val STOP_ROUTE_GUIDANCE_UPDATES = 0x5203 // 车机 → 手机：退订
+
     // ---- ExternalAccessory 会话（链路 2 号会话承载 EA 数据；触摸 HID 高概率载体）----
     const val EA_OPEN_SESSION = 0xEA00 // 手机 → 配件（奥迪可收清单明确支持）
     const val EA_CLOSE_SESSION = 0xEA01 // 手机 → 配件
@@ -90,6 +96,9 @@ object Iap2MessageIds {
             EA_SESSION_STATUS -> "EASessionStatus"
             START_NOW_PLAYING_UPDATES -> "StartNowPlayingUpdates"
             START_ROUTE_GUIDANCE_UPDATES -> "StartRouteGuidanceUpdates"
+            ROUTE_GUIDANCE_UPDATE -> "RouteGuidanceUpdate"
+            ROUTE_GUIDANCE_MANEUVER_UPDATE -> "RouteGuidanceManeuverUpdate"
+            STOP_ROUTE_GUIDANCE_UPDATES -> "StopRouteGuidanceUpdates"
             START_POWER_UPDATES -> "StartPowerUpdates"
             START_COMMUNICATIONS_UPDATES -> "StartCommunicationsUpdates"
             START_CALL_STATE_UPDATES -> "StartCallStateUpdates"

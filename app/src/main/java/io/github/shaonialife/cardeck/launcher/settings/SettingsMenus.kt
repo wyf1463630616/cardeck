@@ -11,6 +11,7 @@ object SettingsMenus {
     const val DOCK = 3
     const val DEFAULT_MAP = 4
     const val DISPLAY = 5
+    const val HUD_MOCK = 6
 
     data class Item(
         val id: Int,
@@ -27,6 +28,7 @@ object SettingsMenus {
             Item(DOCK, "dock 栏设置", "壁纸暗幕透明度与模糊程度", R.drawable.ic_menu_dock),
             Item(DEFAULT_MAP, "默认地图", "仪表盘地图屏使用的地图应用", R.drawable.ic_menu_map),
             Item(DISPLAY, "显示", "流分辨率缩放与目标帧率", R.drawable.ic_menu_display),
+            Item(HUD_MOCK, "HUD 测试", "模拟发送导航数据事件（0x5201/0x5202）", R.drawable.ic_menu_display),
         )
 
     fun titleOf(id: Int): String = ALL.first { it.id == id }.title
@@ -38,6 +40,7 @@ object SettingsMenus {
             ORIENTATION -> OrientationPanelFragment()
             DOCK -> DockPanelFragment()
             DISPLAY -> DisplayPanelFragment()
+            HUD_MOCK -> HudMockPanelFragment()
             else -> DefaultMapPanelFragment()
         }
 }
