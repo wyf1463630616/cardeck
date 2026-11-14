@@ -1,14 +1,18 @@
 package io.github.shaonialife.cardeck.shizuku
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.input.InputManager
+import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
 import android.view.InputEvent
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceControl
 import java.lang.reflect.Method
 
 /**
@@ -27,6 +31,13 @@ import java.lang.reflect.Method
 class CarInputServiceImpl(
     private val context: Context,
 ) : ICarInput.Stub() {
+    /**
+     * 物理屏是否被我们置为 OFF。服务自尽（APK 升级导致的过期自清）前必须恢复，
+     * 否则手机会停在一块「逻辑醒着、物理黑着」的屏上（按电源键两次可恢复）。
+     */
+    @Volatile
+    private var physicalScreenOff = false
+
     /**
      * 僵尸自清（治本，2026-10-16）：Shizuku 按「组件+进程名+版本(APK lastUpdateTime)」复用
      * 常驻 UserService 进程。重装 APK 后旧版本进程既不受 force-stop 影响、Shizuku 也不回收；
@@ -56,6 +67,12 @@ class CarInputServiceImpl(
                         context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
                     }.getOrDefault(-1L)
                 if (startupLastUpdateTime > 0 && now > 0 && now != startupLastUpdateTime) {
+                    // 物理屏若被我们置为 OFF，自尽前必须恢复：否则新版本进程还没起来，
+                    // 手机就停在一块「逻辑醒着、物理黑着」的屏上（按电源键两次才恢复）。
+                    if (physicalScreenOff) {
+                        fileLog("stale self-reap: 恢复物理屏点亮（避免升级后停在黑屏）")
+                        runCatching { setPhysicalScreenPower(true) }
+                    }
                     fileLog(
                         "stale self-reap: lastUpdateTime $startupLastUpdateTime -> $now，" +
                             "exiting pid=${android.os.Process.myPid()}（其持有的虚拟屏随进程回收）",
@@ -114,12 +131,12 @@ class CarInputServiceImpl(
     private var injectFailLogged = false
 
     private fun inject(
-        event: MotionEvent,
+        event: InputEvent,
         displayId: Int,
     ): Boolean {
         val inj = injector
         if (inj == null) {
-            event.recycle()
+            recycle(event)
             return false
         }
         return try {
@@ -143,8 +160,28 @@ class CarInputServiceImpl(
             }
             false
         } finally {
-            event.recycle()
+            recycle(event)
         }
+    }
+
+    /** KeyEvent 没有可复用的池化语义（recycle 已废弃），只有 MotionEvent 需要回收。 */
+    private fun recycle(event: InputEvent) {
+        (event as? MotionEvent)?.recycle()
+    }
+
+    /**
+     * 按键注入（iDrive 旋钮 → 方向键/确认键）：与触摸共用 injectInputEvent，
+     * 差别只是 event 换成 KeyEvent 且同样 setDisplayId 到目标虚拟屏。
+     */
+    override fun keyEvent(
+        displayId: Int,
+        keyCode: Int,
+    ): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0)
+        if (!inject(down, displayId)) return false
+        val up = KeyEvent(now, now + 24, KeyEvent.ACTION_UP, keyCode, 0)
+        return inject(up, displayId)
     }
 
     @Suppress("DEPRECATION")
@@ -343,6 +380,9 @@ class CarInputServiceImpl(
         }
     }
 
+    // WrongConstant：flags 里的 TRUSTED/ALWAYS_UNLOCKED/OWN_DISPLAY_GROUP 是 @hide 常量
+    // （运行时可行性已真机实证），lint 的 IntDef 模型只认公开 API。
+    @android.annotation.SuppressLint("WrongConstant")
     override fun createDisplay(
         name: String,
         width: Int,
@@ -377,23 +417,113 @@ class CarInputServiceImpl(
             // 公开化只放宽窗口访问；ROM 的「公开屏默认自动镜像」仅在未声明
             // OWN_CONTENT_ONLY 时生效，我们已声明，不受影响。dock 屏不受信、无输入场景，
             // 维持私有（也避免无关窗口挂上去）。
-            val flags =
+            val baseFlags =
                 (if (trusted) FLAG_TRUSTED or android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC else 0) or
                     FLAG_SUPPORTS_TOUCH or
                     android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
-            fileLog("flags=0x${flags.toString(16)}")
-            val vd = dm.createVirtualDisplay(name, width, height, dpi, surface, flags, null, null)
-            val id = vd?.display?.displayId ?: -1
-            fileLog("createVirtualDisplay -> vd=$vd id=$id")
-            if (vd == null || id < 0) {
+            // 受信屏额外要「独立显示组 + 永远已解锁」：
+            //  · OWN_DISPLAY_GROUP：手机主屏休眠时虚拟屏不跟着休眠（物理屏断电后仍出帧）；
+            //  · ALWAYS_UNLOCKED：设备锁屏时该屏不画 Keyguard（否则车机看到锁屏/黑屏）。
+            // OWN_DISPLAY_GROUP 复用 ADD_TRUSTED_DISPLAY（受信屏本来就要）；ALWAYS_UNLOCKED
+            // 另需 ADD_ALWAYS_UNLOCKED_DISPLAY——部分 ROM 未授予 shell，带上会抛
+            // SecurityException 把整块屏打挂，因此逐级降级重试。
+            var vd: android.hardware.display.VirtualDisplay? = null
+            if (trusted) {
+                vd =
+                    createVirtualDisplayAttempt(
+                        dm,
+                        name,
+                        width,
+                        height,
+                        dpi,
+                        surface,
+                        baseFlags or FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED,
+                        "受信+独立组+ALWAYS_UNLOCKED",
+                    )
+                if (vd == null) {
+                    fileLog("$name 带 ALWAYS_UNLOCKED 失败——降级为独立组（ROM 可能未给 shell 该权限）")
+                    vd =
+                        createVirtualDisplayAttempt(
+                            dm,
+                            name,
+                            width,
+                            height,
+                            dpi,
+                            surface,
+                            baseFlags or FLAG_OWN_DISPLAY_GROUP,
+                            "受信+独立组",
+                        )
+                }
+                if (vd == null) {
+                    fileLog("$name 带 OWN_DISPLAY_GROUP 失败——回退基础 flags")
+                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "受信基础")
+                }
+            } else {
+                // dock 屏（不受信）默认落在**默认显示组**：物理主屏断电/锁屏时整组跟着灭，
+                // 车机侧表现为「app 屏正常、dock 栏全黑」，解锁后恢复（2026-10-23 实测）。
+                // 与受信屏同款三级降级：组+解锁 → 组 → 基础。
+                //  · AOSP 只在 AUTO_MIRROR 时清掉 OWN_DISPLAY_GROUP，而 AUTO_MIRROR 只随
+                //    PUBLIC 自动置上；dock 没声明 PUBLIC，所以该 flag 会保留；
+                //  · 两者都只要求权限（ADD_TRUSTED_DISPLAY / ADD_ALWAYS_UNLOCKED_DISPLAY），
+                //    不改变 dock「不受信」的语义（第三方任务仍然上不去）。
+                vd =
+                    createVirtualDisplayAttempt(
+                        dm,
+                        name,
+                        width,
+                        height,
+                        dpi,
+                        surface,
+                        baseFlags or FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED,
+                        "非受信+独立组+ALWAYS_UNLOCKED",
+                    )
+                if (vd == null) {
+                    fileLog("$name 带 ALWAYS_UNLOCKED 失败——降级为独立组（ROM 可能未给 shell 该权限）")
+                    vd =
+                        createVirtualDisplayAttempt(
+                            dm,
+                            name,
+                            width,
+                            height,
+                            dpi,
+                            surface,
+                            baseFlags or FLAG_OWN_DISPLAY_GROUP,
+                            "非受信+独立组",
+                        )
+                }
+                if (vd == null) {
+                    fileLog("$name 带 OWN_DISPLAY_GROUP 失败——回退基础 flags（主屏断电时该屏会跟着休眠）")
+                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "非受信")
+                }
+            }
+            val created = vd
+            val id = created?.display?.displayId ?: -1
+            fileLog("createVirtualDisplay -> vd=$created id=$id")
+            // 读回校验（2026-10-23 荣耀实测）：flag 生效时 Display 层 flags 应带
+            // ALWAYS_UNLOCKED（1 << 9）——不带 OWN_DISPLAY_GROUP 时系统会静默剥掉
+            // ALWAYS_UNLOCKED（创建成功无异常但读回没有），必须靠读回才能发现。
+            if (id >= 0) {
+                val realFlags =
+                    try {
+                        dm.getDisplay(id)?.flags ?: 0
+                    } catch (_: Throwable) {
+                        0
+                    }
+                val effective = (realFlags and 0x200) != 0
+                fileLog(
+                    "ALWAYS_UNLOCKED 读回 display.flags=0x${realFlags.toString(16)} -> " +
+                        if (effective) "生效" else "未生效（锁屏仍会影响该屏）",
+                )
+            }
+            if (created == null || id < 0) {
                 Log.w(TAG, "createDisplay $name -> null")
                 return -1
             }
-            synchronized(virtualDisplays) { virtualDisplays[id] = vd }
+            synchronized(virtualDisplays) { virtualDisplays[id] = created }
             // 只有受信屏能设 IME 策略（WMS 对非受信屏抛 SecurityException），且正需要它：
             // dock 屏只承载自有 DockActivity，无输入场景
             if (trusted) applyImePolicyLocal(id)
-            Log.i(TAG, "createDisplay $name id=$id size=${width}x$height@$dpi flags=0x${flags.toString(16)}")
+            Log.i(TAG, "createDisplay $name id=$id size=${width}x$height@$dpi")
             id
         } catch (t: Throwable) {
             fileLog("createDisplay $name failed: $t")
@@ -437,7 +567,172 @@ class CarInputServiceImpl(
         }
     }
 
+    /** 创建一次虚拟屏；失败（含 SecurityException / ROM 静默返回 null）返回 null 并留痕。 */
+    private fun createVirtualDisplayAttempt(
+        dm: android.hardware.display.DisplayManager,
+        name: String,
+        width: Int,
+        height: Int,
+        dpi: Int,
+        surface: Surface,
+        flags: Int,
+        label: String,
+    ): android.hardware.display.VirtualDisplay? =
+        try {
+            fileLog("createDisplay($name) $label flags=0x${flags.toString(16)}")
+            dm.createVirtualDisplay(name, width, height, dpi, surface, flags, null, null)
+        } catch (t: Throwable) {
+            fileLog("createDisplay($name) $label 异常：$t")
+            null
+        }
+
+    // ---- 物理主屏电源（真息屏；系统保持唤醒） ----
+
+    /**
+     * 对**物理主屏**做硬件级断电/点亮（同 scrcpy `-S/--turn-screen-off`）：
+     * 不按电源键（那会锁屏），而是直接调 SurfaceFlinger 的 setDisplayPowerMode。
+     * 系统仍认为屏幕亮着 → 不锁屏、不进 Doze，虚拟屏继续出帧。
+     */
+    override fun setPhysicalScreenPower(on: Boolean): Boolean {
+        val ok = setPanelPower(on)
+        if (ok) physicalScreenOff = !on
+        fileLog("setPhysicalScreenPower($on) ok=$ok")
+        return ok
+    }
+
+    /**
+     * 面板电源统一核心（两套实现的合并点，2026-10-24）：
+     * token 三路枚举按「实测通过率」排序（任何 ROM 只要有一路可用就能工作）；
+     * 断电/点亮统一走 SurfaceControl.setDisplayPowerMode 反射。
+     */
+    private fun setPanelPower(on: Boolean): Boolean {
+        val token =
+            physicalDisplayToken() ?: run {
+                fileLog("setPanelPower($on) 失败：各入口都拿不到内置屏 token")
+                return false
+            }
+        val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
+        return try {
+            Class
+                .forName("android.view.SurfaceControl")
+                .getMethod("setDisplayPowerMode", IBinder::class.java, Integer.TYPE)
+                .invoke(null, token, mode)
+            true
+        } catch (t: Throwable) {
+            fileLog("setPanelPower($on) 失败：$t")
+            false
+        }
+    }
+
+    /**
+     * 物理主屏 token，三路按序回退（不同 ROM 删改面不同，全试最稳）：
+     * ① SurfaceControl.getInternalDisplayToken——荣耀 A17（SDK 37）实测唯一可用，
+     *    放首位（MagicOS 保留了这条「更老」API）；
+     * ② DisplayControl 类加载器——SDK 34+ 的正统入口（scrcpy 同款：services.jar 里的
+     *    类要 ClassLoaderFactory + android_servers JNI 才可见）；
+     * ③ SurfaceControl.getPhysicalDisplayIds/getPhysicalDisplayToken——Android 11~14 旧入口。
+     * 首个物理屏 id 即内置屏（AOSP 约定数组首元素为默认屏）。
+     */
+    // BlockedPrivateApi/DEPRECATION：本方法刻意走隐藏/废弃 API（UserService 跑在 shell
+    // 域不受应用层 hidden API 强制约束；三路回退的运行时行为已真机实证）。
+    @android.annotation.SuppressLint("BlockedPrivateApi")
+    @Suppress("DEPRECATION")
+    private fun physicalDisplayToken(): IBinder? {
+        // ① getInternalDisplayToken（部分 ROM 的 SurfaceControl 仍保留）
+        runCatching {
+            val sc = SurfaceControl::class.java
+            (sc.getDeclaredMethod("getInternalDisplayToken").invoke(null) as? IBinder)?.let {
+                fileLog("token via getInternalDisplayToken")
+                return it
+            }
+        }.onFailure { fileLog("getInternalDisplayToken 入口失败：${it.message}") }
+        // ② DisplayControl（新系统：方法已从 SurfaceControl 迁出）
+        displayControlClass?.let { cls ->
+            runCatching {
+                val ids = cls.getMethod("getPhysicalDisplayIds").invoke(null) as LongArray
+                val id = ids.firstOrNull() ?: return@runCatching
+                (cls.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType!!).invoke(null, id) as? IBinder)?.let {
+                    fileLog("token via DisplayControl id=$id")
+                    return it
+                }
+            }.onFailure { fileLog("DisplayControl token 入口失败：${it.message}") }
+        }
+        // ③ getPhysicalDisplayIds/getPhysicalDisplayToken（Android 11~14）
+        runCatching {
+            val sc = SurfaceControl::class.java
+            val ids = sc.getDeclaredMethod("getPhysicalDisplayIds").invoke(null) as LongArray
+            val id = ids.firstOrNull() ?: return@runCatching
+            (sc.getDeclaredMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType).invoke(null, id) as? IBinder)?.let {
+                fileLog("token via SurfaceControl.getPhysicalDisplayToken id=$id")
+                return it
+            }
+        }.onFailure { fileLog("getPhysicalDisplayToken 入口失败：${it.message}") }
+        return null
+    }
+
+    /** DisplayControl 类加载器（真息屏用）：只运行在 Shizuku UserService（shell uid）里。 */
+    private val displayControlClass: Class<*>? by lazy {
+        try {
+            val factory = Class.forName("com.android.internal.os.ClassLoaderFactory")
+            val create =
+                factory.getDeclaredMethod(
+                    "createClassLoader",
+                    String::class.java,
+                    String::class.java,
+                    String::class.java,
+                    ClassLoader::class.java,
+                    Integer.TYPE,
+                    java.lang.Boolean.TYPE,
+                    String::class.java,
+                )
+            val classpath = System.getenv("SYSTEMSERVERCLASSPATH")
+            if (classpath.isNullOrEmpty()) {
+                fileLog("SYSTEMSERVERCLASSPATH 为空——无法加载 DisplayControl")
+                return@lazy null
+            }
+            val loader =
+                create.invoke(
+                    null,
+                    classpath,
+                    null,
+                    null,
+                    ClassLoader.getSystemClassLoader(),
+                    0,
+                    true,
+                    null,
+                ) as ClassLoader
+            val cls = loader.loadClass("com.android.server.display.DisplayControl")
+            // 静态 JNI 方法在 libandroid_servers.so 里注册；必须加载进这个 ClassLoader
+            registerAndroidServersLibrary(cls)
+            fileLog("DisplayControl 已就绪")
+            cls
+        } catch (t: Throwable) {
+            fileLog("DisplayControl 加载失败（SDK ${Build.VERSION.SDK_INT}）：$t")
+            null
+        }
+    }
+
+    /**
+     * 把 libandroid_servers.so 的 JNI 注册进 [cls] 所在的 ClassLoader（scrcpy 同款路径）。
+     *
+     * 本类只运行在 Shizuku UserService（shell uid 2000 的 app_process），不受应用进程的
+     * hidden-API 限制；lint 的 BlockedPrivateApi 按 targetSdk 应用进程判定，故此处豁免。
+     */
+    @SuppressLint("BlockedPrivateApi")
+    private fun registerAndroidServersLibrary(cls: Class<*>) {
+        val loadLibrary0 =
+            Runtime::class.java.getDeclaredMethod("loadLibrary0", Class::class.java, String::class.java)
+        loadLibrary0.isAccessible = true
+        loadLibrary0.invoke(Runtime.getRuntime(), cls, "android_servers")
+    }
+
     override fun ping(): Boolean = injector != null
+
+    override fun setScreenPower(on: Boolean): Boolean {
+        val ok = setPanelPower(on)
+        fileLog("setScreenPower($on) ok=$ok")
+        return ok
+    }
 
     override fun diag(): String =
         "injector=" + (injector?.let { "${it.receiver.javaClass.name} ${it.method}" } ?: "null") +
@@ -456,5 +751,25 @@ class CarInputServiceImpl(
 
         /** VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH（@hide；AOSP 定义 = 1 << 6 = 0x40）。 */
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+
+        /**
+         * VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP（@hide；AOSP 定义 = 1 << 11 = 0x800）。
+         * 虚拟屏进自己的 DisplayGroup：手机主屏休眠/断电时，它不跟着进入 OFF。
+         * 需要 ADD_TRUSTED_DISPLAY（受信屏本来就要）——见 DisplayManagerService 的校验。
+         */
+        private const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
+
+        /**
+         * VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED（@hide；AOSP 定义 = 1 << 12 = 0x1000）。
+         * 锁屏状态下该屏不显示 Keyguard。**另需 ADD_ALWAYS_UNLOCKED_DISPLAY**，
+         * 部分 ROM 未授予 shell——createDisplay 里必须能降级重试，否则整块屏创建失败。
+         */
+        private const val FLAG_ALWAYS_UNLOCKED = 1 shl 12
+
+        /** SurfaceControl 显示电源模式：OFF=硬件断电，NORMAL=正常点亮。 */
+        private const val POWER_MODE_OFF = 0
+        private const val POWER_MODE_NORMAL = 2
+
+        /** SurfaceControl 显示电源模式（@hide；AOSP 定义 OFF=0 / NORMAL=2，反射失败时兜底用）。 */
     }
 }
