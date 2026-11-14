@@ -500,9 +500,7 @@ object SessionController {
         currentHiddenSource = null
         TouchRouter
             .reset()
-        currentClient?.cancelled = true
-        currentClient?.close()
-        currentClient = null
+        closeCurrentClient("会话退役")
         // 注意：这里绝不能 detach BT 控制会话。本方法在每轮配对起步时也会执行，
         // 而 DiPlay 在 WiFi 隧道就绪前看到 RFCOMM 断开即判 bring-up failed、
         // closeWirelessStack 拆掉整轮无线栈（Bonjour/热点/AirPlay 服务），把已建立
@@ -515,6 +513,43 @@ object SessionController {
         // 配对前，等于每次连接白等 1.6s（2026-10-18 实测）。执行器串行保证
         // 「先复原上一会话、后写入本会话」的顺序。
         appContext?.let { ctx -> AppOrientationCompat.resetAllAsync(ctx, ::appendLog) }
+    }
+
+    /**
+     * 统一关闭当前 AirPlay 控制通道：**已 RECORD 的会话先补发 TEARDOWN，再关 socket**。
+     *
+     * 为什么不能只关 socket（2026-10-31 真车日志定谳）：我们此前没有任何收尾消息，
+     * 车机的 CarPlay 状态机收不到「会话结束」，下一轮 iAP2 回连后卡在
+     * 「链路层 ACK 0x1d00、CSM 层不回 0x1d01」，35s 后自行拆链，再往后连 0x80 都不答——
+     * 现场表现为**只能退出车机 CarPlay / 重启 App 才恢复**。这正是要消灭的「必须从头来」。
+     *
+     * 触发点覆盖两类断联，都必须走这里：
+     *  1. **被动断联**（推流终止/端口断开/车机掉线，见 [VideoSender.onEnded]）——
+     *     这是「断联后重连」的主场景：此刻控制通道通常还活着，是唯一能体面收尾的时机，
+     *     错过了就只能等车机自己超时（实测 35s～45s），期间任何重连都会被它拒答。
+     *  2. **主动断开 / 新一轮会话起飞前的退役**（[retireSession] / [disconnect]）。
+     *
+     * 线程：TEARDOWN 是一次带 1.5s 上限的 RTSP 往返，绝不能跑在 UI 线程（[disconnect]
+     * 由英雄卡点击触发）。因此关闭动作整体转交 [Bg]；本方法立即返回，调用方看到的
+     * `currentClient` 已置空，不会与新会话竞争同一对象。
+     *
+     * 幂等：同一会话只发一次 TEARDOWN（[AirPlayClient.teardownAttempted]），三个入口
+     * 先后触发不会重复打扰车机。
+     */
+    private fun closeCurrentClient(reason: String) {
+        val client = currentClient ?: return
+        currentClient = null
+        client.cancelled = true
+        if (!client.sessionRecorded || client.teardownAttempted) {
+            // 未 RECORD（还没激活过）或已收尾过：直接关，不发多余请求
+            runCatching { client.close() }
+            return
+        }
+        appendLog("AIRPLAY: 会话收尾中（TEARDOWN → 关通道，$reason）")
+        Bg.run("airplay-teardown") {
+            client.teardown(reason)
+            runCatching { client.close() }
+        }
     }
 
     /** 会话已建立且投影就绪、但音频尚未启动时，动态补启（投影授权晚于连接的场景）。 */
@@ -2050,6 +2085,11 @@ object SessionController {
                                             onEnded = {
                                                 // 会话真实结束：解除静默降噪（客户端恢复探测/重连）
                                                 appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
+                                                // 断联即收尾：此刻控制通道通常还活着，必须先让车机
+                                                // 知道会话结束，否则它卡在旧状态、下一轮回连只给
+                                                // 链路 ACK 不回 0x1d01（35s 后自行拆链），现场表现为
+                                                // 「必须退出车机 CarPlay 才能重连」。
+                                                closeCurrentClient("推流终止")
                                                 BtSessionGate.sessionActive = false
                                                 // 车机掉线类结束（无用户断开操作）：暗幕/常亮必须一起收掉。
                                                 // 这条路径不经过 retireSession（VirtualLauncher 仍挂着），

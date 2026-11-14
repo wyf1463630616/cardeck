@@ -136,6 +136,17 @@ class Iap2SenderSession(
          */
         const val START_SESSION_WAIT_NEW_PROTOCOL_NANOS = 8_000_000_000L
 
+        /**
+         * 等 0x1d01（车机身份）的窗口——bring-up 全流程里最该短的一步。
+         *
+         * 实测：CAMRY/DiPlay/奥迪的 0x1d01 都在 31~62ms 内到（2026-10-31 两份真车日志）。
+         * 而车机侧残留上一轮 CarPlay 会话时，它**链路层照常 ACK 0x1d00、CSM 层一言不发**，
+         * 旧实现要等链路整体 deadline（60s，实际 35s 后被对端拆链）才报错，期间既无日志
+         * 也无重试，用户看到的就是「卡住不动、只能重启」。收到 ACK 却拿不到身份属于
+         * 「瞬时不可恢复」类失败：快速判死、交给上层重连，比长等更有价值。
+         */
+        const val IDENTIFICATION_WAIT_NANOS = 6_000_000_000L
+
         /** 0x4301 原始体日志上限（Audi 实测 261B，完整记录；异常大的只截前段）。 */
         const val START_SESSION_RAW_LOG_BYTES = 1_024
 
@@ -171,7 +182,7 @@ class Iap2SenderSession(
 
         // ---- 识别 ----
         send(Iap2MessageIds.START_IDENTIFICATION)
-        val identification = expect(Iap2MessageIds.IDENTIFICATION_INFORMATION, deadline)
+        val identification = expectIdentification(deadline)
         logIdentification(identification)
         send(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
         log("iap2 tx=0x1d02 identification-accepted")
@@ -607,6 +618,34 @@ class Iap2SenderSession(
     ): Iap2Csm.Frame =
         expectOrNull(messageId, deadline)
             ?: throw IOException("等待 0x${messageId.toString(16)} 超时")
+
+    /**
+     * 等车机身份信息（0x1d01），窗口独立且短（见 [IDENTIFICATION_WAIT_NANOS]）。
+     *
+     * 为什么单独一个窗口：0x1d01 是 bring-up 的第一道门，拿不到就没有后续（0x4301 不会来、
+     * 热点凭据无从获取、WiFi 无法加入）。实测正常情况 31~62ms 即到，而失败时车机是
+     * 「链路层 ACK 了 0x1d00、CSM 层从此静默」——这不是慢，是它没进识别状态机。
+     * 用整体 deadline 等它，等于把 35~60s 的空白期留给用户，且期间日志一片沉默。
+     *
+     * 判定为「瞬时不可恢复」类失败：抛错让上层重连（断联侧已补 TEARDOWN 时，
+     * 下一轮即能正常识别），而不是原地长等。
+     */
+    private fun expectIdentification(deadline: Long): Iap2Csm.Frame {
+        val startedAt = System.nanoTime()
+        expectOrNull(
+            Iap2MessageIds.IDENTIFICATION_INFORMATION,
+            minOf(deadline, startedAt + IDENTIFICATION_WAIT_NANOS),
+        )?.let { return it }
+        val elapsed = (System.nanoTime() - startedAt) / 1_000_000L
+        // 诊断埋点：区分「车机没回身份」与「车机回了别的东西」，两者处置完全不同
+        log(
+            "iap2 ⚠ 0x1d00 发出 ${elapsed}ms 未收到 0x1d01" +
+                "（暂存 ${pendingFrames.size} 帧，链路${if (channel.isAlive) "在线" else "已断"}）——" +
+                "车机侧多半仍停留在上一轮 CarPlay 会话（链路 ACK 了请求但没进识别阶段）；" +
+                "上一轮若是断联退出，应先补 TEARDOWN 再重连",
+        )
+        throw IOException("等待 0x1d01 超时（车机未回身份信息，疑似残留上一轮会话）")
+    }
 
     /**
      * 同 [expect]，但超时返回 null（用于可选消息）。非预期帧进暂存区供后续消费。

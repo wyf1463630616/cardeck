@@ -182,6 +182,27 @@ class AirPlayClient(
     var pairingInProgress: Boolean = false
         private set
 
+    /**
+     * 本会话是否已 RECORD（接收端 onSessionActive 已触发）。
+     *
+     * 只有激活过的会话才值得发 TEARDOWN：未激活的会话接收端还没建状态，
+     * 补发收尾反而可能被当成异常请求。每条新 TCP 连接由 [ensureConnected] 复位。
+     */
+    @Volatile
+    var sessionRecorded: Boolean = false
+        private set
+
+    /**
+     * 是否已尝试过 TEARDOWN（幂等闸）。
+     *
+     * 收尾有三个入口（用户断开 / 推流终止 / 会话退役回退路径），同一会话必须只发一次：
+     * 重复的 TEARDOWN 会让车机把「已在拆的会话」当新请求处理，实测会让它推迟 1~2s
+     * 才释放 CarPlay 状态（正是我们要消除的那种延迟）。
+     */
+    @Volatile
+    var teardownAttempted: Boolean = false
+        private set
+
     /** 当前端点（主控合并晚到端点时用作兜底，避免 0x4301 不带 IP 时把可用地址抹掉）。 */
     val currentEndpoint: Iap2SenderSession.CarPlayEndpoint get() = endpoint
 
@@ -462,6 +483,16 @@ class AirPlayClient(
             readerGeneration++
         }
         failAllPending("控制通道关闭")
+        // 事件通道同样要随会话关闭。此前只关 RTSP 控制连接，事件 socket 会一直活到
+        // 被对端 reset（日志里的 `EVENT: 读取结束 - Connection reset`）：车机侧「还有
+        // 发送端挂在我的事件端口上」的判断因此迟迟不解除，即便我们已发出 TEARDOWN。
+        // 连接重试路径（retryWithPairing）也会走到这里，事件通道在 SETUP 之后由
+        // connectEventChannel 重建，关闭无副作用。
+        synchronized(eventCommandLock) {
+            runCatching { eventCommandSocket?.close() }
+            eventCommandSocket = null
+            eventCommandCipher = null
+        }
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
@@ -2041,11 +2072,59 @@ class AirPlayClient(
                 )
             val ok = statusLine.contains("200")
             log(if (ok) "AIRPLAY: ✓ RECORD 完成——会话已激活" else "AIRPLAY: RECORD 应答 [$statusLine]")
+            if (ok) sessionRecorded = true
             ok
         } catch (error: IOException) {
             log("AIRPLAY: RECORD 失败 - ${error.message}")
             false
         }
+
+    /**
+     * 协议级收尾：向接收端发 `TEARDOWN`，再关控制通道。
+     *
+     * 为什么必须有（2026-10-31 真车日志定谳）：此前会话结束只是**关 socket**，本文档
+     * 里没有任何 TEARDOWN / 反会话结束消息。车机的 CarPlay 状态机收不到收尾信号，
+     * 下一轮 iAP2 回连后表现为「链路层 ACK 我们的 0x1d00、CSM 层再不回 0x1d01」，
+     * 35 秒后自行拆链，再往后连链路层 0x80 都不应答——只能退出车机 CarPlay 才恢复。
+     * 同一份日志里两次成功建链都发生在「此前无 AirPlay 会话」的空闲态，与上述机制吻合。
+     *
+     * 注意方向：`/ctrl-int/1/disconnect` 是**接收端 → 发送端**方向的探测（日志里
+     * `GET /ctrl-int/1/connect` 正是车机发给我们的），本端没有对车机的 ctrl-int 端点，
+     * 因此不盲发该请求；收尾只走控制通道的标准 TEARDOWN。
+     *
+     * @return true = 接收端回 200（确认会话结束）；false = 未确认，需由链路断开兜底
+     */
+    fun teardown(reason: String): Boolean {
+        if (teardownAttempted) {
+            log("AIRPLAY: TEARDOWN 已发过（$reason）——不重复发送")
+            return true
+        }
+        if (socket?.isConnected != true || socket?.isClosed == true) {
+            // 控制通道已断：此刻发不出去，如实记一笔（下次排查能区分「没发」与「发了没回」）
+            log("AIRPLAY: TEARDOWN 跳过——控制通道已关闭（$reason），接收端只能靠链路断开感知")
+            return false
+        }
+        teardownAttempted = true
+        return try {
+            val (statusLine, _) =
+                request(
+                    "TEARDOWN",
+                    "/",
+                    BinaryPlist.encode(linkedMapOf<String, Any?>()),
+                    timeoutMillis = 1_500,
+                    contentType = "application/x-apple-binary-plist",
+                )
+            val ok = statusLine.contains("200")
+            log(
+                "AIRPLAY: TEARDOWN 应答 [$statusLine]（$reason）——" +
+                    if (ok) "接收端已确认会话结束" else "接收端未确认，退化由链路断开感知",
+            )
+            ok
+        } catch (error: IOException) {
+            log("AIRPLAY: TEARDOWN 未完成 - ${error.message}（$reason）——退化由链路断开感知")
+            false
+        }
+    }
 
     /**
      * 连接事件通道（接收端在 SETUP 应答的 eventPort 上等我们）。
@@ -2282,6 +2361,11 @@ class AirPlayClient(
                 // 这里若留 soTimeout，读线程会周期性收到 SocketTimeoutException 而退出
                 newSocket.soTimeout = 0
                 socket = newSocket
+                // 新连接 = 新会话：收尾标记必须复位，否则同一实例的重试路径
+                // （retryWithPairing / reconnect）会把「上个会话已发过 TEARDOWN」带过来，
+                // 导致新一轮真正需要收尾时被幂等闸挡掉。
+                teardownAttempted = false
+                sessionRecorded = false
                 activeAddress = address
                 activeHost = addressLiteral(address)
                 log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")

@@ -14,14 +14,14 @@
         android:layout_marginTop="6dp"
         android:layout_marginBottom="11dp"
         android:text="视频流按车机分辨率的百分比生成虚拟屏与编码画面（逻辑布局不变）。分辨率改动下次连接起效；帧率为推流刷新频率，切换实时生效。"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="流分辨率"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -36,7 +36,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="26" />
+            android:max="26"
+            android:progressDrawable="@drawable/bg_seek_track"
+            android:thumb="@drawable/bg_seek_thumb" />
 
         <TextView
             android:id="@+id/displayScaleValue"
@@ -44,7 +46,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
             android:gravity="right"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -54,7 +56,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:text="保存后下次连接起效"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 
     <TextView
@@ -62,7 +64,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="目标帧率"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -97,7 +99,7 @@
             android:paddingRight="18dp"
             android:paddingBottom="6dp"
             android:text="60 fps"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold" />
     </LinearLayout>
@@ -107,7 +109,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:text="连接中切换实时生效；英雄卡实时显示「实际/目标」帧率"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 
     <TextView
@@ -115,7 +117,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="触摸注入节流"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -130,7 +132,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="6" />
+            android:max="6"
+            android:progressDrawable="@drawable/bg_seek_track"
+            android:thumb="@drawable/bg_seek_thumb" />
 
         <TextView
             android:id="@+id/throttleValue"
@@ -138,7 +142,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
             android:gravity="right"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -147,6 +151,6 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:text="交互滞后但帧率正常（事件派发堆积）时调高试验；拖动即时生效"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 </LinearLayout>

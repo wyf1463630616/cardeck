@@ -108,7 +108,7 @@ class SettingsActivity :
             for (c in 0 until menu.childCount) {
                 val child = menu.getChildAt(c)
                 if (child is TextView) {
-                    child.setTextColor(if (i == index) 0xFFF5F5F7.toInt() else 0xFF8E8E93.toInt())
+                    child.setTextColor(if (i == index) 0xE6FFFFFF.toInt() else 0x99FFFFFF.toInt())
                     child.paint.isFakeBoldText = i == index
                 }
             }

@@ -36,7 +36,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="CarDeck"
-                        android:textColor="#EDF3F3"
+                        android:textColor="#E6FFFFFF"
                         android:textSize="21sp"
                         android:textStyle="bold" />
 
@@ -48,7 +48,7 @@
                         android:drawableStart="@drawable/ic_dot_small"
                         android:drawablePadding="5dp"
                         android:gravity="center_vertical"
-                        android:textColor="#7C8B8B"
+                        android:textColor="#99FFFFFF"
                         android:textSize="11.5sp"
                         android:text="设备检测中" />
                 </LinearLayout>
@@ -151,7 +151,7 @@
                         android:layout_marginBottom="10dp"
                         android:letterSpacing="0.22"
                         android:text="CARDECK"
-                        android:textColor="#5C6B6B"
+                        android:textColor="#61FFFFFF"
                         android:textSize="10sp"
                         android:textStyle="bold" />
                 </FrameLayout>
@@ -169,7 +169,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="未连接"
-                        android:textColor="#EDF4F4"
+                        android:textColor="#E6FFFFFF"
                         android:textSize="25sp"
                         android:textStyle="bold" />
 
@@ -184,7 +184,7 @@
                         android:paddingEnd="11dp"
                         android:paddingBottom="5dp"
                         android:text="清理残留屏"
-                        android:textColor="#FFB4AB"
+                        android:textColor="#FFFF6B6B"
                         android:textSize="11.5sp"
                         android:textStyle="bold"
                         android:visibility="gone" />
@@ -218,7 +218,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:text="分辨率 100% · 30/30 fps"
-                    android:textColor="#8E8E93"
+                    android:textColor="#99FFFFFF"
                     android:textSize="11.5sp"
                     android:visibility="gone" />
 
@@ -300,7 +300,7 @@
                         android:layout_weight="1"
                         android:letterSpacing="0.06"
                         android:text="连接准备"
-                        android:textColor="#8FA09F"
+                        android:textColor="#61FFFFFF"
                         android:textSize="12.5sp"
                         android:textStyle="bold" />
 
@@ -314,7 +314,7 @@
                         android:paddingEnd="9dp"
                         android:paddingBottom="2dp"
                         android:text="0/3"
-                        android:textColor="#6FC4CF"
+                        android:textColor="#FF8FB4FF"
                         android:textSize="11sp"
                         android:textStyle="bold" />
                 </LinearLayout>
@@ -389,7 +389,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginStart="54dp"
-                    android:background="#5A394444" />
+                    android:background="#1AFFFFFF" />
 
                 <!-- 蓝牙配对 -->
                 <LinearLayout
@@ -483,7 +483,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginStart="54dp"
-                    android:background="#5A394444" />
+                    android:background="#1AFFFFFF" />
 
                 <!-- 车机热点 -->
                 <LinearLayout
@@ -536,8 +536,8 @@
                             android:paddingTop="6dp"
                             android:paddingEnd="10dp"
                             android:paddingBottom="6dp"
-                            android:textColor="#C4D2D1"
-                            android:textColorHint="#5A6B7A"
+                            android:textColor="#E6FFFFFF"
+                            android:textColorHint="#61FFFFFF"
                             android:textSize="13.5sp"
                             android:textStyle="bold" />
                     </LinearLayout>
@@ -562,7 +562,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginStart="54dp"
-                    android:background="#5A394444" />
+                    android:background="#1AFFFFFF" />
 
                 <!-- 车机侧声音 -->
                 <LinearLayout
@@ -627,6 +627,98 @@
                         android:textSize="13sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginStart="54dp"
+                    android:background="#1AFFFFFF" />
+
+                <!-- 自动回连（配置项，不计入准备计数）：主动连失败后的重连策略 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="60dp"
+                    android:orientation="horizontal"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="8dp">
+
+                    <FrameLayout
+                        android:layout_width="38dp"
+                        android:layout_height="38dp"
+                        android:background="@drawable/bg_icon_tile">
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:layout_gravity="center"
+                            android:contentDescription="自动回连"
+                            android:src="@drawable/ic_refresh" />
+                    </FrameLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="自动回连"
+                            android:textColor="@color/m3_on_surface"
+                            android:textSize="14.5sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/autoReconnectDesc"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="手机发起：失败后自动重试主动连"
+                            android:textColor="@color/m3_on_var"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/autoReconnectSegment"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_segment"
+                        android:orientation="horizontal"
+                        android:padding="3dp">
+
+                        <TextView
+                            android:id="@+id/autoReconnectBtnPhone"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_segment_sel"
+                            android:paddingLeft="12dp"
+                            android:paddingTop="6dp"
+                            android:paddingRight="12dp"
+                            android:paddingBottom="6dp"
+                            android:text="手机发起"
+                            android:textColor="#FFFFFFFF"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/autoReconnectBtnWait"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginLeft="2dp"
+                            android:paddingLeft="12dp"
+                            android:paddingTop="6dp"
+                            android:paddingRight="12dp"
+                            android:paddingBottom="6dp"
+                            android:text="等待车机"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
             </LinearLayout>
 
             <!-- ==================== 车机显示 ==================== -->
@@ -645,7 +737,7 @@
                     android:paddingTop="14dp"
                     android:letterSpacing="0.06"
                     android:text="车机显示"
-                    android:textColor="#8FA09F"
+                    android:textColor="#61FFFFFF"
                     android:textSize="12.5sp"
                     android:textStyle="bold" />
 
@@ -709,7 +801,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginStart="54dp"
-                    android:background="#5A394444" />
+                    android:background="#1AFFFFFF" />
 
                 <!-- 立即假息屏 -->
                 <LinearLayout
@@ -775,7 +867,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginStart="54dp"
-                    android:background="#5A394444" />
+                    android:background="#1AFFFFFF" />
 
                 <!-- 车机壁纸 -->
                 <LinearLayout
@@ -1320,7 +1412,7 @@
                 android:layout_marginTop="8dp"
                 android:gravity="center"
                 android:text="连接由前台服务保活 · 退出本界面不影响会话"
-                android:textColor="#576767"
+                android:textColor="#61FFFFFF"
                 android:textSize="11sp" />
             </LinearLayout>
             </LinearLayout>
@@ -1341,7 +1433,7 @@
         android:background="@drawable/bg_card"
         android:backgroundTint="@color/m3_inverse"
         android:drawableStart="@drawable/ic_check_circle_small"
-        android:drawableTint="#8FD8E2"
+        android:drawableTint="#FF5A8DFF"
         android:drawablePadding="9dp"
         android:elevation="8dp"
         android:gravity="center_vertical"

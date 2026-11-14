@@ -145,7 +145,7 @@ class SupersamplePanelFragment : SettingsPanelFragment() {
             segs.forEach { (view, segMode) ->
                 val active = segMode == mode
                 view.background = if (active) requireActivity().getDrawable(R.drawable.bg_segment_sel) else null
-                view.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0xFF8E8E93.toInt())
+                view.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0x99FFFFFF.toInt())
             }
         }
     }
@@ -373,7 +373,7 @@ class OrientationPanelFragment : SettingsPanelFragment() {
             when {
                 onSystem && enabled -> {
                     hint.text = "已开启横屏（会话期间生效）"
-                    hint.setTextColor(0xFF8E8E93.toInt())
+                    hint.setTextColor(0x99FFFFFF.toInt())
                     hint.visibility = View.VISIBLE
                     hint.setOnClickListener(null)
                     hint.isClickable = false
@@ -542,7 +542,7 @@ class DefaultMapPanelFragment : SettingsPanelFragment() {
             container.addView(
                 TextView(requireContext()).apply {
                     text = "未安装任何受支持的地图应用（高德/百度/腾讯）"
-                    setTextColor(0xFF8E8E93.toInt())
+                    setTextColor(0x99FFFFFF.toInt())
                     textSize = 13f
                 },
             )
@@ -657,13 +657,13 @@ class DisplayPanelFragment : SettingsPanelFragment() {
                 if (active30) R.drawable.bg_segment_sel else R.drawable.bg_segment,
             )
             fps30.setTextColor(
-                if (active30) 0xFFFFFFFF.toInt() else 0xFF8E8E93.toInt(),
+                if (active30) 0xFFFFFFFF.toInt() else 0x99FFFFFF.toInt(),
             )
             fps60.setBackgroundResource(
                 if (active30) R.drawable.bg_segment else R.drawable.bg_segment_sel,
             )
             fps60.setTextColor(
-                if (active30) 0xFF8E8E93.toInt() else 0xFFFFFFFF.toInt(),
+                if (active30) 0x99FFFFFF.toInt() else 0xFFFFFFFF.toInt(),
             )
         }
 

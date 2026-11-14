@@ -6,7 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="horizontal"
-    android:background="#FF000000">
+    android:background="#FF0D0D0D">
 
     <!-- ===================== 左栏：菜单 ===================== -->
     <LinearLayout
@@ -32,7 +32,7 @@
             android:paddingRight="10dp"
             android:paddingBottom="6dp"
             android:text="桌面"
-            android:textColor="#FF0A84FF"
+            android:textColor="#FF5A8DFF"
             android:textSize="13sp" />
 
         <TextView
@@ -43,7 +43,7 @@
             android:layout_marginRight="8dp"
             android:letterSpacing="0.14"
             android:text="车机设置"
-            android:textColor="#FF636366"
+            android:textColor="#61FFFFFF"
             android:textSize="11sp"
             android:textStyle="bold" />
 
@@ -70,7 +70,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="管理桌面应用"
-                android:textColor="#FFF5F5F7"
+                android:textColor="#E6FFFFFF"
                 android:textSize="14sp"
                 android:textStyle="bold" />
         </LinearLayout>
@@ -98,7 +98,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="应用超采样"
-                android:textColor="#FF8E8E93"
+                android:textColor="#99FFFFFF"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -125,7 +125,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="应用横屏"
-                android:textColor="#FF8E8E93"
+                android:textColor="#99FFFFFF"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -152,7 +152,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="dock 栏设置"
-                android:textColor="#FF8E8E93"
+                android:textColor="#99FFFFFF"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -179,7 +179,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="默认地图"
-                android:textColor="#FF8E8E93"
+                android:textColor="#99FFFFFF"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -206,7 +206,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="9dp"
                 android:text="显示"
-                android:textColor="#FF8E8E93"
+                android:textColor="#99FFFFFF"
                 android:textSize="14sp" />
         </LinearLayout>
     </LinearLayout>
@@ -214,7 +214,7 @@
     <View
         android:layout_width="1px"
         android:layout_height="match_parent"
-        android:background="#FF1E1E21" />
+        android:background="#1AFFFFFF" />
 
     <!-- ===================== 右栏：内容（按菜单切换） ===================== -->
     <FrameLayout
@@ -242,7 +242,7 @@
             android:paddingTop="7dp"
             android:paddingRight="13dp"
             android:paddingBottom="7dp"
-            android:textColor="#FFE5E5EA"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </FrameLayout>
 </LinearLayout>

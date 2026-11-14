@@ -14,14 +14,14 @@
         android:layout_marginTop="6dp"
         android:layout_marginBottom="11dp"
         android:text="调整 dock 栏壁纸的暗幕透明度与高斯模糊程度，拖动即时生效。"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="暗幕透明度"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -36,7 +36,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="100" />
+            android:max="100"
+            android:progressDrawable="@drawable/bg_seek_track"
+            android:thumb="@drawable/bg_seek_thumb" />
 
         <TextView
             android:id="@+id/dockScrimValue"
@@ -44,7 +46,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
             android:gravity="right"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -53,7 +55,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
         android:text="背景模糊程度"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -68,7 +70,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="100" />
+            android:max="100"
+            android:progressDrawable="@drawable/bg_seek_track"
+            android:thumb="@drawable/bg_seek_thumb" />
 
         <TextView
             android:id="@+id/dockBlurValue"
@@ -76,7 +80,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
             android:gravity="right"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -85,7 +89,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
         android:text="栏宽度"
-        android:textColor="#FFF5F5F7"
+        android:textColor="#E6FFFFFF"
         android:textSize="14sp" />
 
     <LinearLayout
@@ -100,7 +104,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="10" />
+            android:max="10"
+            android:progressDrawable="@drawable/bg_seek_track"
+            android:thumb="@drawable/bg_seek_thumb" />
 
         <TextView
             android:id="@+id/dockWidthValue"
@@ -108,7 +114,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
             android:gravity="right"
-            android:textColor="#FF8E8E93"
+            android:textColor="#99FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 
@@ -117,6 +123,6 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:text="整条 Dock（图标/时钟/文字）等比缩放，50%–100%；保存后下次连接起效"
-        android:textColor="#FF8E8E93"
+        android:textColor="#99FFFFFF"
         android:textSize="12sp" />
 </LinearLayout>

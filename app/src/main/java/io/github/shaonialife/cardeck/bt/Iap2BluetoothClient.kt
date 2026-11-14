@@ -48,6 +48,45 @@ class Iap2BluetoothClient(
         private const val RETRY_DELAY_MILLIS = 3_000L
         private const val FAILURE_LOG_THROTTLE_MILLIS = 15_000L
 
+        /**
+         * 「等待车机」模式的重连间隔（连接准备里的「自动回连」配置，MainActivity 持久化）。
+         *
+         * CAMRY 实测（2026-10-26/27）：主动连入车机 RFCOMM 后 iAP2 SYN 无响应、协商必超时，
+         * 成功路径是**失败后车机主动回连**（实测 ~2s 内「接收端已连入」）。立即自动重连会
+         * 与车机回连抢同一条无线 iAP2 上下文——本模式失败后长退避，把窗口让给车机回连
+         * （[BtSessionGate.inboundActive] 置位后出站本就暂停，此处只是不抢跑）。
+         */
+        private const val WAIT_CAR_RETRY_DELAY_MILLIS = 25_000L
+
+        /** 「自动回连」配置在 SharedPreferences 中的键（与 MainActivity 一致）。 */
+        private const val PREF_WAIT_CAR_RECONNECT = "autoReconnectWaitCar"
+
+        /** 「等待车机」模式开关（false=手机发起，即现有 3s 重连逻辑）。 */
+        @Volatile
+        var waitCarReconnect: Boolean = false
+            private set
+
+        /**
+         * 从持久化偏好恢复「自动回连」设置，并同步到 [waitCarReconnect]。
+         *
+         * 真值源是 SharedPreferences（用户在连接准备里手动选定后写入）；[waitCarReconnect]
+         * 只是进程内镜像。进程被系统回收、前台服务存活而 Activity 未重建时，静态字段会
+         * 回落为默认 false——由 [start] 在每轮启动时调本方法补齐，避免用户手动选择的
+         * 「等待车机」被静默降级为 3s 重连。
+         *
+         * @return 恢复后的值
+         */
+        fun syncWaitCarFromPrefs(context: Context): Boolean {
+            val restored =
+                runCatching {
+                    context
+                        .getSharedPreferences("settings", Context.MODE_PRIVATE)
+                        .getBoolean(PREF_WAIT_CAR_RECONNECT, false)
+                }.getOrDefault(false)
+            waitCarReconnect = restored
+            return restored
+        }
+
         /** 「蓝牙已连接→已断开」日志节流（车机可能反复自动重连，避免刷屏）。 */
         private const val PROFILE_LOG_THROTTLE_MILLIS = 15_000L
 
@@ -166,6 +205,9 @@ class Iap2BluetoothClient(
         // 每轮启动重置 SDP 结论与跳过日志（新配对/换固件后重新探测）
         iap2ServiceCache.clear()
         skippedNoService.clear()
+        // 双源对齐：以持久化偏好为准恢复「自动回连」模式（防进程重建后静态字段回落默认，
+        // 导致用户手动选的「等待车机」被静默降级为 3s 重连）。
+        syncWaitCarFromPrefs(context)
         running = true
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
@@ -245,7 +287,10 @@ class Iap2BluetoothClient(
                                 "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
                                     if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
                             )
-                            log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                            // 事实陈述，不做因果断言：部分车机（奥迪 MIB3 实测）在 HFP/A2DP
+                            // 在线时不开放无线 CarPlay 的 iAP2 窗口；CAMRY 的失败另有其因
+                            // （车机只回 ACK 不回 CSM），此处若写死结论会把排查引偏。
+                            log("BT-C: 已断开上述配置文件（保持配对关系，iAP2 为独立 SDP 直连服务）")
                         }
                     }
                 }
@@ -263,7 +308,7 @@ class Iap2BluetoothClient(
                 }
             }
             if (connected == null) {
-                sleepQuietly(RETRY_DELAY_MILLIS)
+                sleepQuietly(retryDelayMillis())
                 continue
             }
             if (generation.get() != myGeneration) {
@@ -272,10 +317,16 @@ class Iap2BluetoothClient(
                 return
             }
             runSession(connected)
-            sleepQuietly(RETRY_DELAY_MILLIS)
+            if (waitCarReconnect) {
+                log("BT-C: 等待车机模式——暂停主动重连 ${WAIT_CAR_RETRY_DELAY_MILLIS / 1000}s，等车机回连接管（回连自动继续）")
+            }
+            sleepQuietly(retryDelayMillis())
         }
         log("BT-C: 客户端已停止")
     }
+
+    /** 失败后的重连节拍：「等待车机」= 长退避让出回连窗口；「手机发起」= 现有 3s 重连。 */
+    private fun retryDelayMillis(): Long = if (waitCarReconnect) WAIT_CAR_RETRY_DELAY_MILLIS else RETRY_DELAY_MILLIS
 
     /**
      * 候选设备：优先 SDP 缓存里带配件端 UUID 的已配对设备；
@@ -346,6 +397,16 @@ class Iap2BluetoothClient(
             channel.runSenderSession(context, SESSION_TIMEOUT_MILLIS, log, onEndpoint, onWifiCredentials, onEndpointUpdate)
         } catch (error: IOException) {
             log("BT-C: SESSION 失败 - ${error.message}")
+            // 区分「连不上」与「RFCOMM 已建立但车机不吭声」：后者 LOG 里前面刚打过
+            // 「✓ 已连入…（RFCOMM 建立）」，若不点明极易被读成「连上了但协议实现有问题」。
+            // 本车机（Desay SV CAMRY）实测：手机发起 5 次，0 次收到 0x80 会话表——
+            // 它只接受自己发起的回连，主动连接仅起到「敲门」作用。
+            if (error.message?.contains("链路协商超时") == true) {
+                log(
+                    "BT-C: ↑ 该次为「RFCOMM 已建立但 iAP2 无应答」（本车机不接受手机发起，" +
+                        "等待车机回连才是有效路径）——不计为协议错误",
+                )
+            }
         } finally {
             activeChannel = null
             currentSocket.getAndSet(null)?.let { runCatching { it.close() } }

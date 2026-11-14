@@ -28,6 +28,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
 import io.github.shaonialife.cardeck.bt.BtProfiles
+import io.github.shaonialife.cardeck.bt.Iap2BluetoothClient
 import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.input.TouchRouter
 import io.github.shaonialife.cardeck.launcher.VirtualLauncher
@@ -824,8 +825,10 @@ class MainActivity : AppCompatActivity() {
                         "若提示\"无法访问互联网\"请选择保持连接",
                 )
             } else {
-                snack("暂无热点密码——蓝牙连上后自动获取")
-                log("WiFi: 尚未拿到热点密码（需蓝牙会话 0x5703）——打开 WLAN 设置手动选择 \"$ssid\"")
+                snack("暂无热点密码——蓝牙会话完成后自动获取")
+                // 文案不写死 0x5703：本车机（Desay SV CAMRY）根本不支持该消息，AP 信息
+                // 只走 0x4301，写「需 0x5703」会把排查引到根本不存在的分支上。
+                log("WiFi: 尚未拿到热点密码（需先完成蓝牙会话：0x1d01 识别 → 0x4301 自带 AP 信息）——打开 WLAN 设置手动选择 \"$ssid\"")
             }
             try {
                 startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
@@ -846,6 +849,46 @@ class MainActivity : AppCompatActivity() {
             }
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
             projectionLauncher.launch(manager.createScreenCaptureIntent())
+        }
+
+        // 自动回连（连接准备第五项，配置项不计入准备计数）：
+        // 分段双态（与 30/60fps 同款交互）：手机发起（默认，失败后 3s 重试主动连）；
+        // 等待车机（失败后 25s 长退避，把回连窗口让给车机——CAMRY 实测成功靠车机回连）。
+        run {
+            val btnPhone = findViewById<TextView>(R.id.autoReconnectBtnPhone)
+            val btnWait = findViewById<TextView>(R.id.autoReconnectBtnWait)
+            val desc = findViewById<TextView>(R.id.autoReconnectDesc)
+
+            fun apply(
+                wait: Boolean,
+                persist: Boolean,
+            ) {
+                listOf(btnPhone to !wait, btnWait to wait).forEach { (btn, active) ->
+                    btn.setBackgroundResource(if (active) R.drawable.bg_segment_sel else 0)
+                    btn.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0x99FFFFFF.toInt())
+                }
+                desc.text =
+                    if (wait) {
+                        "等待车机：失败后暂停主动重连，等车机回连接管（下一轮生效）"
+                    } else {
+                        "手机发起：失败后自动重试主动连（下一轮生效）"
+                    }
+                if (persist) {
+                    // 持久化偏好是真值源：先落盘，再由唯一同步入口刷新进程内镜像。
+                    // 重启/进程回收后同样由 Iap2BluetoothClient.start() 调本入口恢复，
+                    // 杜绝「用户手动选择的模式被默认值覆盖」。
+                    preferences.edit().putBoolean("autoReconnectWaitCar", wait).apply()
+                    log(
+                        "BT-C: 自动回连模式 = " +
+                            if (wait) "等待车机（失败后暂停主动重连 25s，等车机回连）" else "手机发起（失败后 3s 重试）",
+                    )
+                }
+                Iap2BluetoothClient.syncWaitCarFromPrefs(this)
+            }
+
+            apply(preferences.getBoolean("autoReconnectWaitCar", false), persist = false)
+            btnPhone.setOnClickListener { apply(wait = false, persist = true) }
+            btnWait.setOnClickListener { apply(wait = true, persist = true) }
         }
 
         // ---- 车机显示 ----
@@ -879,6 +922,22 @@ class MainActivity : AppCompatActivity() {
         // ---- 折叠卡：高级 / 日志 ----
         bindExpandable(R.id.advHeader, advBody, advChevron)
         bindExpandable(R.id.logHeader, logBody, logChevron)
+
+        // 暗幕 ↔ 系统栏联动：假息屏黑遮罩（APPLICATION_OVERLAY）盖不住系统栏，
+        // 深色主题下系统栏切纯黑与遮罩融合（常态 #0D0D0D，暗幕 #000000）；
+        // light bars 恒关，防恢复路径误亮。
+        ScreenDimmer.onDimChanged = { dim ->
+            runOnUiThread {
+                val bar = if (dim) 0xFF000000.toInt() else 0xFF0D0D0D.toInt()
+                window.statusBarColor = bar
+                window.navigationBarColor = bar
+                val flags =
+                    android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
+                        android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                window.decorView.systemUiVisibility =
+                    window.decorView.systemUiVisibility and flags.inv()
+            }
+        }
 
         // ---- Shell 全局状态 ----
         findViewById<View>(R.id.btnShellRefresh).setOnClickListener { refreshShellState() }
@@ -1046,7 +1105,7 @@ class MainActivity : AppCompatActivity() {
         hubPlate.background.mutate().setTint(plateColor)
         hubCar.setColorFilter(carColor)
         hubCaption.setTextColor(
-            if (s == HeroState.IDLE) getColor(R.color.m3_mono_dim) else 0xFF5C8B96.toInt(),
+            if (s == HeroState.IDLE) getColor(R.color.m3_mono_dim) else 0xFF8FB4FF.toInt(),
         )
 
         hubBlink?.cancel()

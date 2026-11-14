@@ -147,6 +147,7 @@ object ScreenDimmer {
         watchView = null
         dimShown = false
         windowManager = null
+        runCatching { onDimChanged?.invoke(false) }
         h?.post {
             dim?.let { v -> runCatching { wm?.removeView(v) } }
             watch?.let { v -> runCatching { wm?.removeView(v) } }
@@ -159,6 +160,14 @@ object ScreenDimmer {
 
     /** 暗幕是否已就绪（attach 完成且具备悬浮窗能力）。 */
     fun isAttached(): Boolean = handler != null && windowManager != null
+
+    /**
+     * 暗幕显隐回调（true=进入假息屏）。浅色主题下系统栏需随暗幕切黑/恢复
+     * （APPLICATION_OVERLAY 只盖内容区，系统栏由 SystemUI 画在其上）——
+     * MainActivity 挂接窗口系统栏切换。
+     */
+    @Volatile
+    var onDimChanged: ((Boolean) -> Unit)? = null
 
     /** 手动进入假息屏（主页面按钮触发；点击暗幕或手机屏幕任意处恢复）。 */
     fun enterDimNow() {
@@ -223,6 +232,7 @@ object ScreenDimmer {
                 dimView = view
                 dimShown = true
                 Log.i("CarPlaySender", "DIMMER: 暗幕已显示")
+                runCatching { onDimChanged?.invoke(true) }
             }.onFailure { Log.w(TAG, "暗幕添加失败：${it.message}") }
     }
 
@@ -231,6 +241,7 @@ object ScreenDimmer {
         dimView = null
         dimShown = false
         runCatching { windowManager?.removeView(view) }
+        runCatching { onDimChanged?.invoke(false) }
     }
 
     /** 1px 触摸探针：捕获屏幕上任意处的 DOWN 事件用于重置计时，不消费事件。 */
